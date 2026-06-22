@@ -9,10 +9,16 @@ WIFI_CONFIG_FILE="$CONFIG_DIR/wifi.env"
 SERVICE_FILE="/etc/systemd/system/printcam.service"
 WIFI_SERVICE_FILE="/etc/systemd/system/printcam-wifi-reconnect.service"
 WIFI_TIMER_FILE="/etc/systemd/system/printcam-wifi-reconnect.timer"
+POWER_CONFIG_DIR="/etc/systemd/logind.conf.d"
+POWER_CONFIG_FILE="$POWER_CONFIG_DIR/99-printcam-power.conf"
+DCONF_PROFILE_FILE="/etc/dconf/profile/user"
+DCONF_CONFIG_DIR="/etc/dconf/db/local.d"
+DCONF_CONFIG_FILE="$DCONF_CONFIG_DIR/99-printcam-power"
+POWER_STATE_FILE="$CONFIG_DIR/power-state.env"
 DATA_DIR="/var/lib/printcam"
 MOTION_DIR="$DATA_DIR/motion"
 MOTION_STATE_FILE="$DATA_DIR/motion-enabled"
-CAMERA_DEVICE="${PRINTCAM_CAMERA_DEVICE:-/dev/video2}"
+CAMERA_DEVICE="${PRINTCAM_CAMERA_DEVICE:-}"
 PORT="${PRINTCAM_PORT:-8080}"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -25,7 +31,121 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "==> Installing OS packages"
 apt-get update
-apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils rsync network-manager
+apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils rsync network-manager openssh-server dconf-cli
+
+echo "==> Selecting camera"
+if [[ -n "$CAMERA_DEVICE" ]]; then
+  echo "Using camera from PRINTCAM_CAMERA_DEVICE: $CAMERA_DEVICE"
+else
+  CAMERA_DEVICES=()
+  CAMERA_DEVICE_SEEN=" "
+  while IFS= read -r line; do
+    device="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$device" == /dev/video* && -e "$device" && "$CAMERA_DEVICE_SEEN" != *" $device "* ]]; then
+      CAMERA_DEVICES+=("$device")
+      CAMERA_DEVICE_SEEN+=" $device "
+    fi
+  done < <(v4l2-ctl --list-devices 2>/dev/null || true)
+
+  if [[ "${#CAMERA_DEVICES[@]}" -eq 0 ]]; then
+    while IFS= read -r device; do
+      if [[ "$CAMERA_DEVICE_SEEN" != *" $device "* ]]; then
+        CAMERA_DEVICES+=("$device")
+        CAMERA_DEVICE_SEEN+=" $device "
+      fi
+    done < <(find /dev -maxdepth 1 -type c -name 'video*' 2>/dev/null | sort -V)
+  fi
+
+  if [[ "${#CAMERA_DEVICES[@]}" -gt 0 ]]; then
+    echo "Detected cameras:"
+    for index in "${!CAMERA_DEVICES[@]}"; do
+      printf '  %d) %s\n' "$((index + 1))" "${CAMERA_DEVICES[$index]}"
+    done
+
+    while [[ -z "$CAMERA_DEVICE" ]]; do
+      read -r -p "Camera to use [1] or device path: " CAMERA_CHOICE
+      CAMERA_CHOICE="${CAMERA_CHOICE:-1}"
+      if [[ "$CAMERA_CHOICE" =~ ^[0-9]+$ && "$CAMERA_CHOICE" -ge 1 && "$CAMERA_CHOICE" -le "${#CAMERA_DEVICES[@]}" ]]; then
+        CAMERA_DEVICE="${CAMERA_DEVICES[$((CAMERA_CHOICE - 1))]}"
+      elif [[ "$CAMERA_CHOICE" == /dev/video* ]]; then
+        CAMERA_DEVICE="$CAMERA_CHOICE"
+      else
+        echo "Choose a number from the list, or enter a path like /dev/video2."
+      fi
+    done
+  else
+    read -r -p "No cameras were detected. Camera device path [/dev/video2]: " CAMERA_DEVICE
+    CAMERA_DEVICE="${CAMERA_DEVICE:-/dev/video2}"
+  fi
+fi
+
+echo "==> Enabling SSH"
+if systemctl list-unit-files ssh.service 2>/dev/null | grep -q '^ssh\.service'; then
+  systemctl enable --now ssh.service
+elif systemctl list-unit-files sshd.service 2>/dev/null | grep -q '^sshd\.service'; then
+  systemctl enable --now sshd.service
+else
+  systemctl enable --now ssh || systemctl enable --now sshd
+fi
+
+echo "==> Configuring display blanking and disabling sleep"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$POWER_CONFIG_DIR"
+cat > "$POWER_CONFIG_FILE" <<EOF_POWER
+[Login]
+IdleAction=ignore
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+EOF_POWER
+
+POWER_TARGETS=(sleep.target suspend.target hibernate.target hybrid-sleep.target)
+if [[ ! -f "$POWER_STATE_FILE" ]]; then
+  {
+    for target in "${POWER_TARGETS[@]}"; do
+      var_name="PRINTCAM_PREVIOUS_${target//[-.]/_}"
+      printf '%s=%q\n' "$var_name" "$(systemctl is-enabled "$target" 2>/dev/null || true)"
+    done
+  } > "$POWER_STATE_FILE"
+  chmod 600 "$POWER_STATE_FILE"
+  chown root:root "$POWER_STATE_FILE"
+fi
+
+systemctl mask "${POWER_TARGETS[@]}"
+systemctl try-restart systemd-logind || true
+
+mkdir -p "$(dirname "$DCONF_PROFILE_FILE")" "$DCONF_CONFIG_DIR"
+if [[ ! -f "$DCONF_PROFILE_FILE" ]]; then
+  cat > "$DCONF_PROFILE_FILE" <<EOF_DCONF_PROFILE
+user-db:user
+system-db:local
+EOF_DCONF_PROFILE
+elif ! grep -qx 'system-db:local' "$DCONF_PROFILE_FILE"; then
+  printf '\nsystem-db:local\n' >> "$DCONF_PROFILE_FILE"
+fi
+
+cat > "$DCONF_CONFIG_FILE" <<EOF_DCONF
+[org/cinnamon/desktop/session]
+idle-delay=uint32 60
+
+[org/cinnamon/settings-daemon/plugins/power]
+sleep-display-ac=uint32 60
+sleep-display-battery=uint32 60
+sleep-inactive-ac-type='nothing'
+sleep-inactive-battery-type='nothing'
+button-lid-ac='nothing'
+button-lid-battery='nothing'
+
+[org/gnome/desktop/session]
+idle-delay=uint32 60
+
+[org/gnome/settings-daemon/plugins/power]
+sleep-inactive-ac-type='nothing'
+sleep-inactive-battery-type='nothing'
+sleep-inactive-ac-timeout=uint32 0
+sleep-inactive-battery-timeout=uint32 0
+EOF_DCONF
+dconf update || true
 
 echo "==> Configuring Wi-Fi"
 systemctl enable --now NetworkManager
@@ -44,7 +164,6 @@ if [[ -n "${PRINTCAM_WIFI_SSID:-}" && -z "${PRINTCAM_WIFI_PASSWORD+x}" ]]; then
   echo
 fi
 
-mkdir -p "$CONFIG_DIR"
 if [[ -n "${PRINTCAM_WIFI_SSID:-}" ]]; then
   {
     printf 'PRINTCAM_WIFI_SSID=%q\n' "$PRINTCAM_WIFI_SSID"
@@ -151,7 +270,8 @@ chown root:root "$APP_DIR/scripts/run_server.sh"
 chown root:root "$APP_DIR/scripts/wifi-reconnect.sh"
 
 systemctl daemon-reload
-systemctl enable --now printcam
+systemctl enable printcam.service
+systemctl start printcam.service
 if [[ -n "${PRINTCAM_WIFI_SSID:-}" ]]; then
   systemctl enable --now printcam-wifi-reconnect.timer
 fi

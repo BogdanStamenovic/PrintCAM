@@ -1,19 +1,21 @@
 # PrintCAM
 
-Temporary, scuffed, useful camera dashboard for a Linux Mint machine. PrintCAM streams `/dev/video2` through a password-protected web UI and shows basic machine health such as uptime, CPU, memory, disk, network throughput, Tailscale IP, and camera status.
+Temporary, scuffed, useful camera dashboard for a Linux Mint machine. PrintCAM streams the camera selected during install through a password-protected web UI and shows basic machine health such as uptime, CPU, memory, disk, network throughput, Tailscale IP, and camera status.
 
 It is intended to be hosted on your Tailnet with Tailscale, then kept alive by `systemd` after reboot.
 
 ## What You Get
 
 - Password login page
-- Live MJPEG camera stream from `/dev/video2`
+- Live MJPEG camera stream from the selected camera device
 - Motion detection that saves confirmed movement videos
 - Motion event gallery with enable, disable, open, and delete controls
 - Health dashboard with uptime, load, CPU, memory, disk, temperature, network speed, boot time, hostname, service time, Tailscale status, and camera status
 - Linux Mint auto-install script
 - Systemd service that starts on boot
 - Wi-Fi setup with automatic reconnect checks
+- SSH server enabled for remote access
+- Laptop display blanks after 1 minute while the computer keeps running
 - Password reset helper
 - Tailscale install/login helper
 
@@ -29,15 +31,18 @@ sudo scripts/install.sh
 The installer will:
 
 1. Install OS packages.
-2. Ask for Wi-Fi name and password.
-3. Connect the laptop to that Wi-Fi network.
-4. Install Tailscale if it is not present.
-5. Ask for the web password.
-6. Copy the app to `/opt/printcam`.
-7. Create `/etc/printcam/printcam.env`.
-8. Create and start `printcam.service`.
-9. Create a Wi-Fi reconnect timer.
-10. Show the local and Tailscale URLs.
+2. Detect installed cameras and ask which camera to use.
+3. Enable SSH.
+4. Set the laptop display to blank after 1 minute and disable system sleep.
+5. Ask for Wi-Fi name and password.
+6. Connect the laptop to that Wi-Fi network.
+7. Install Tailscale if it is not present.
+8. Ask for the web password.
+9. Copy the app to `/opt/printcam`.
+10. Create `/etc/printcam/printcam.env`.
+11. Enable `printcam.service` at system startup and start it now.
+12. Create a Wi-Fi reconnect timer.
+13. Show the local and Tailscale URLs.
 
 If Tailscale is not already logged in, the installer runs `tailscale up` and prints the login URL.
 
@@ -45,7 +50,7 @@ If Tailscale is not already logged in, the installer runs `tailscale up` and pri
 
 | Setting | Default |
 | --- | --- |
-| Camera device | `/dev/video2` |
+| Camera device | Chosen during install |
 | Bind host | `0.0.0.0` |
 | Port | `8080` |
 | Install path | `/opt/printcam` |
@@ -54,6 +59,8 @@ If Tailscale is not already logged in, the installer runs `tailscale up` and pri
 | Motion event path | `/var/lib/printcam/motion` |
 | Service | `printcam.service` |
 | Wi-Fi reconnect timer | `printcam-wifi-reconnect.timer` |
+| Display blanking | 1 minute |
+| System sleep | Disabled |
 
 Change these by editing `/etc/printcam/printcam.env`, then restart:
 
