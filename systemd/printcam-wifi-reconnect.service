@@ -1,0 +1,8 @@
+[Unit]
+Description=PrintCAM Wi-Fi reconnect check
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/printcam/scripts/wifi-reconnect.sh

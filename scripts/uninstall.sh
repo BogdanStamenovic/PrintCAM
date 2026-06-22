@@ -7,7 +7,10 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 systemctl disable --now printcam 2>/dev/null || true
+systemctl disable --now printcam-wifi-reconnect.timer 2>/dev/null || true
 rm -f /etc/systemd/system/printcam.service
+rm -f /etc/systemd/system/printcam-wifi-reconnect.service
+rm -f /etc/systemd/system/printcam-wifi-reconnect.timer
 systemctl daemon-reload
 rm -rf /opt/printcam /etc/printcam /var/lib/printcam
 

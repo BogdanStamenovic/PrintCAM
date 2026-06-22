@@ -5,7 +5,10 @@ APP_NAME="printcam"
 APP_DIR="/opt/printcam"
 CONFIG_DIR="/etc/printcam"
 CONFIG_FILE="$CONFIG_DIR/printcam.env"
+WIFI_CONFIG_FILE="$CONFIG_DIR/wifi.env"
 SERVICE_FILE="/etc/systemd/system/printcam.service"
+WIFI_SERVICE_FILE="/etc/systemd/system/printcam-wifi-reconnect.service"
+WIFI_TIMER_FILE="/etc/systemd/system/printcam-wifi-reconnect.timer"
 DATA_DIR="/var/lib/printcam"
 MOTION_DIR="$DATA_DIR/motion"
 MOTION_STATE_FILE="$DATA_DIR/motion-enabled"
@@ -22,7 +25,42 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "==> Installing OS packages"
 apt-get update
-apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils rsync
+apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils rsync network-manager
+
+echo "==> Configuring Wi-Fi"
+systemctl enable --now NetworkManager
+if [[ -z "${PRINTCAM_WIFI_SSID:-}" ]]; then
+  CURRENT_WIFI="$(nmcli -t -f active,ssid dev wifi 2>/dev/null | awk -F: '$1 == "yes" {print $2; exit}' || true)"
+  if [[ -n "$CURRENT_WIFI" ]]; then
+    read -r -p "Wi-Fi network name [$CURRENT_WIFI]: " PRINTCAM_WIFI_SSID
+    PRINTCAM_WIFI_SSID="${PRINTCAM_WIFI_SSID:-$CURRENT_WIFI}"
+  else
+    read -r -p "Wi-Fi network name (leave blank to skip): " PRINTCAM_WIFI_SSID
+  fi
+fi
+
+if [[ -n "${PRINTCAM_WIFI_SSID:-}" && -z "${PRINTCAM_WIFI_PASSWORD+x}" ]]; then
+  read -r -s -p "Wi-Fi password for $PRINTCAM_WIFI_SSID (leave blank for open network): " PRINTCAM_WIFI_PASSWORD
+  echo
+fi
+
+mkdir -p "$CONFIG_DIR"
+if [[ -n "${PRINTCAM_WIFI_SSID:-}" ]]; then
+  {
+    printf 'PRINTCAM_WIFI_SSID=%q\n' "$PRINTCAM_WIFI_SSID"
+    printf 'PRINTCAM_WIFI_PASSWORD=%q\n' "${PRINTCAM_WIFI_PASSWORD:-}"
+  } > "$WIFI_CONFIG_FILE"
+  chmod 600 "$WIFI_CONFIG_FILE"
+  chown root:root "$WIFI_CONFIG_FILE"
+
+  nmcli radio wifi on || true
+  if [[ -n "${PRINTCAM_WIFI_PASSWORD:-}" ]]; then
+    nmcli dev wifi connect "$PRINTCAM_WIFI_SSID" password "$PRINTCAM_WIFI_PASSWORD" name "PrintCAM WiFi" || true
+  else
+    nmcli dev wifi connect "$PRINTCAM_WIFI_SSID" name "PrintCAM WiFi" || true
+  fi
+  nmcli connection modify "PrintCAM WiFi" connection.autoconnect yes || true
+fi
 
 if ! command -v tailscale >/dev/null 2>&1; then
   echo "==> Installing Tailscale"
@@ -68,7 +106,6 @@ python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
 echo "==> Configuring password"
-mkdir -p "$CONFIG_DIR"
 if [[ -z "${PRINTCAM_PASSWORD:-}" ]]; then
   read -r -s -p "PrintCAM web password: " PRINTCAM_PASSWORD
   echo
@@ -105,12 +142,18 @@ chown root:root "$CONFIG_FILE"
 
 echo "==> Installing systemd service"
 cp "$APP_DIR/systemd/printcam.service" "$SERVICE_FILE"
+cp "$APP_DIR/systemd/printcam-wifi-reconnect.service" "$WIFI_SERVICE_FILE"
+cp "$APP_DIR/systemd/printcam-wifi-reconnect.timer" "$WIFI_TIMER_FILE"
 chmod +x "$APP_DIR/scripts/"*.sh
 chown -R "$APP_NAME:$APP_NAME" "$APP_DIR"
 chown root:root "$APP_DIR/scripts/run_server.sh"
+chown root:root "$APP_DIR/scripts/wifi-reconnect.sh"
 
 systemctl daemon-reload
 systemctl enable --now printcam
+if [[ -n "${PRINTCAM_WIFI_SSID:-}" ]]; then
+  systemctl enable --now printcam-wifi-reconnect.timer
+fi
 
 TAILSCALE_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
 HOSTNAME="$(hostname)"
@@ -123,3 +166,6 @@ if [[ -n "$TAILSCALE_IP" ]]; then
 fi
 echo
 echo "Check logs with: sudo journalctl -u printcam -f"
+if [[ -n "${PRINTCAM_WIFI_SSID:-}" ]]; then
+  echo "Wi-Fi reconnect logs: sudo journalctl -u printcam-wifi-reconnect -f"
+fi

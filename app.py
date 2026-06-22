@@ -369,6 +369,7 @@ def network_status():
             "bytes_recv": counters.bytes_recv,
             "upload_bytes_per_second": net_sample["up_bps"],
             "download_bytes_per_second": net_sample["down_bps"],
+            "wifi_ssid": active_wifi_ssid(),
         }
 
 
@@ -381,6 +382,17 @@ def tailscale_status():
         "status": status["stdout"].strip() if status["returncode"] == 0 else status["stderr"].strip(),
         "ok": ip["returncode"] == 0,
     }
+
+
+def active_wifi_ssid():
+    wifi = run_command(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+    if wifi["returncode"] != 0:
+        return None
+    for line in wifi["stdout"].splitlines():
+        fields = line.split(":", 1)
+        if len(fields) == 2 and fields[0] == "yes":
+            return fields[1] or None
+    return None
 
 
 def ensure_motion_dir():

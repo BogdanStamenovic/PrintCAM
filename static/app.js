@@ -9,6 +9,7 @@ const ids = {
   temperature: document.querySelector("#temperature"),
   netDown: document.querySelector("#net-down"),
   netUp: document.querySelector("#net-up"),
+  wifi: document.querySelector("#wifi"),
   tailscale: document.querySelector("#tailscale"),
   camera: document.querySelector("#camera"),
   load: document.querySelector("#load"),
@@ -74,6 +75,7 @@ async function refreshStatus() {
     );
     setText(ids.netDown, formatRate(status.network.download_bytes_per_second));
     setText(ids.netUp, formatRate(status.network.upload_bytes_per_second));
+    setText(ids.wifi, status.network.wifi_ssid || "offline");
     setText(ids.tailscale, status.tailscale.ip4 || (status.tailscale.ok ? "online" : "offline"));
     setText(ids.camera, status.camera.opened ? "streaming" : status.camera.last_error || "offline");
     setText(ids.load, status.host.load_average ? status.host.load_average.map((v) => v.toFixed(2)).join(" ") : "n/a");

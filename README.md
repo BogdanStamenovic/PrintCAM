@@ -13,6 +13,7 @@ It is intended to be hosted on your Tailnet with Tailscale, then kept alive by `
 - Health dashboard with uptime, load, CPU, memory, disk, temperature, network speed, boot time, hostname, service time, Tailscale status, and camera status
 - Linux Mint auto-install script
 - Systemd service that starts on boot
+- Wi-Fi setup with automatic reconnect checks
 - Password reset helper
 - Tailscale install/login helper
 
@@ -28,12 +29,15 @@ sudo scripts/install.sh
 The installer will:
 
 1. Install OS packages.
-2. Install Tailscale if it is not present.
-3. Ask for the web password.
-4. Copy the app to `/opt/printcam`.
-5. Create `/etc/printcam/printcam.env`.
-6. Create and start `printcam.service`.
-7. Show the local and Tailscale URLs.
+2. Ask for Wi-Fi name and password.
+3. Connect the laptop to that Wi-Fi network.
+4. Install Tailscale if it is not present.
+5. Ask for the web password.
+6. Copy the app to `/opt/printcam`.
+7. Create `/etc/printcam/printcam.env`.
+8. Create and start `printcam.service`.
+9. Create a Wi-Fi reconnect timer.
+10. Show the local and Tailscale URLs.
 
 If Tailscale is not already logged in, the installer runs `tailscale up` and prints the login URL.
 
@@ -46,8 +50,10 @@ If Tailscale is not already logged in, the installer runs `tailscale up` and pri
 | Port | `8080` |
 | Install path | `/opt/printcam` |
 | Config file | `/etc/printcam/printcam.env` |
+| Wi-Fi config file | `/etc/printcam/wifi.env` |
 | Motion event path | `/var/lib/printcam/motion` |
 | Service | `printcam.service` |
+| Wi-Fi reconnect timer | `printcam-wifi-reconnect.timer` |
 
 Change these by editing `/etc/printcam/printcam.env`, then restart:
 
@@ -91,6 +97,30 @@ sudo systemctl restart printcam
 sudo systemctl status printcam
 sudo systemctl restart printcam
 sudo journalctl -u printcam -f
+```
+
+## Wi-Fi Reconnect
+
+The installer asks for the Wi-Fi network name and password, connects with NetworkManager, and stores the credentials in:
+
+```text
+/etc/printcam/wifi.env
+```
+
+That file is root-owned and only readable by root. A systemd timer runs every minute and tries to reconnect if the active Wi-Fi network is not the configured one.
+
+Useful commands:
+
+```bash
+sudo systemctl status printcam-wifi-reconnect.timer
+sudo systemctl start printcam-wifi-reconnect.service
+sudo journalctl -u printcam-wifi-reconnect -f
+```
+
+To change Wi-Fi later, edit `/etc/printcam/wifi.env`, then run:
+
+```bash
+sudo systemctl start printcam-wifi-reconnect.service
 ```
 
 ## Camera Checks
@@ -169,6 +199,7 @@ app.py                  Flask app and camera streamer
 requirements.txt       Python dependencies
 scripts/install.sh     Linux Mint installer
 scripts/run_server.sh  Systemd entrypoint
+scripts/wifi-reconnect.sh Wi-Fi reconnect helper
 scripts/set-password.sh Password reset helper
 scripts/uninstall.sh   Remove installed service/app/config
 templates/             HTML templates
