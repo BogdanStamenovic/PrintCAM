@@ -9,7 +9,7 @@ fi
 systemctl disable --now printcam 2>/dev/null || true
 rm -f /etc/systemd/system/printcam.service
 systemctl daemon-reload
-rm -rf /opt/printcam /etc/printcam
+rm -rf /opt/printcam /etc/printcam /var/lib/printcam
 
 if id -u printcam >/dev/null 2>&1; then
   userdel printcam

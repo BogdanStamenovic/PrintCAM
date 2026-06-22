@@ -22,6 +22,22 @@
         <div class="stream-shell">
           <img id="camera-stream" src="{{ url_for('video') }}" alt="Live camera stream">
         </div>
+
+        <section class="motion-section">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Motion</p>
+              <h2>Saved movement</h2>
+            </div>
+            <div class="motion-actions">
+              <button id="toggle-motion" class="ghost-button toggle-button" type="button">Motion ...</button>
+              <button id="clear-motion" class="ghost-button danger-button" type="button">Clear all</button>
+            </div>
+          </div>
+          <div id="motion-events" class="motion-grid">
+            <div class="empty-state">No motion saved yet.</div>
+          </div>
+        </section>
       </section>
 
       <aside class="status-panel">
@@ -77,6 +93,18 @@
           <div class="metric">
             <span>Load</span>
             <strong id="load">...</strong>
+          </div>
+          <div class="metric">
+            <span>Motion saved</span>
+            <strong id="motion-count">...</strong>
+          </div>
+          <div class="metric">
+            <span>Motion detection</span>
+            <strong id="motion-enabled">...</strong>
+          </div>
+          <div class="metric">
+            <span>Last motion</span>
+            <strong id="last-motion">...</strong>
           </div>
         </div>
       </aside>

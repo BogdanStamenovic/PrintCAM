@@ -94,6 +94,89 @@ h2 {
   object-fit: contain;
 }
 
+.motion-section {
+  margin-top: 18px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.motion-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.toggle-button.is-on {
+  border-color: color-mix(in srgb, var(--good), transparent 25%);
+  color: #d9ffeb;
+  background: color-mix(in srgb, var(--good), transparent 85%);
+}
+
+.motion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.motion-card {
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.motion-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #050605;
+}
+
+.motion-meta {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.motion-meta strong {
+  font-size: 13px;
+}
+
+.motion-meta span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.delete-motion {
+  width: calc(100% - 20px);
+  min-height: 36px;
+  margin: 0 10px 10px;
+  border: 1px solid color-mix(in srgb, var(--bad), transparent 35%);
+  border-radius: 8px;
+  color: #ffd8d8;
+  background: color-mix(in srgb, var(--bad), transparent 88%);
+  cursor: pointer;
+}
+
+.delete-motion:hover,
+.danger-button:hover {
+  border-color: var(--bad);
+}
+
+.empty-state {
+  padding: 18px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 .status-panel {
   border-left: 1px solid var(--line);
   background: var(--panel);
@@ -244,6 +327,11 @@ h2 {
 
   .ghost-button {
     width: 100%;
+  }
+
+  .motion-actions {
+    width: 100%;
+    flex-direction: column;
   }
 
   .topbar form {

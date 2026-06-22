@@ -8,6 +8,8 @@ It is intended to be hosted on your Tailnet with Tailscale, then kept alive by `
 
 - Password login page
 - Live MJPEG camera stream from `/dev/video2`
+- Motion detection that saves movement snapshots
+- Motion event gallery with enable, disable, open, and delete controls
 - Health dashboard with uptime, load, CPU, memory, disk, temperature, network speed, boot time, hostname, service time, Tailscale status, and camera status
 - Linux Mint auto-install script
 - Systemd service that starts on boot
@@ -44,6 +46,7 @@ If Tailscale is not already logged in, the installer runs `tailscale up` and pri
 | Port | `8080` |
 | Install path | `/opt/printcam` |
 | Config file | `/etc/printcam/printcam.env` |
+| Motion event path | `/var/lib/printcam/motion` |
 | Service | `printcam.service` |
 
 Change these by editing `/etc/printcam/printcam.env`, then restart:
@@ -122,13 +125,33 @@ Then restart:
 sudo systemctl restart printcam
 ```
 
+## Motion Detection
+
+Motion snapshots are saved when the camera image changes enough between frames. They show up in the Saved movement section on the dashboard.
+
+Useful settings in `/etc/printcam/printcam.env`:
+
+```text
+PRINTCAM_MOTION_ENABLED=1
+PRINTCAM_MOTION_DIR=/var/lib/printcam/motion
+PRINTCAM_MOTION_STATE_FILE=/var/lib/printcam/motion-enabled
+PRINTCAM_MOTION_MIN_INTERVAL=8
+PRINTCAM_MOTION_CHANGED_PERCENT=1.8
+PRINTCAM_MOTION_PIXEL_DELTA=28
+PRINTCAM_MOTION_MAX_EVENTS=200
+```
+
+Lower `PRINTCAM_MOTION_CHANGED_PERCENT` if it misses small printer movement. Raise it if lighting flicker creates too many saves. `PRINTCAM_MOTION_MIN_INTERVAL` prevents one long move from saving hundreds of images.
+
+You can turn motion detection on and off from the dashboard. That toggle is saved in `PRINTCAM_MOTION_STATE_FILE`, so it survives app restarts.
+
 ## Uninstall
 
 ```bash
 sudo scripts/uninstall.sh
 ```
 
-This removes the service, `/opt/printcam`, and `/etc/printcam`. It does not uninstall Tailscale or system packages.
+This removes the service, `/opt/printcam`, `/etc/printcam`, and `/var/lib/printcam`. It does not uninstall Tailscale or system packages.
 
 ## Security Notes
 

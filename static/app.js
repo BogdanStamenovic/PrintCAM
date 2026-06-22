@@ -12,7 +12,15 @@ const ids = {
   tailscale: document.querySelector("#tailscale"),
   camera: document.querySelector("#camera"),
   load: document.querySelector("#load"),
+  motionCount: document.querySelector("#motion-count"),
+  motionEnabled: document.querySelector("#motion-enabled"),
+  lastMotion: document.querySelector("#last-motion"),
+  motionEvents: document.querySelector("#motion-events"),
+  clearMotion: document.querySelector("#clear-motion"),
+  toggleMotion: document.querySelector("#toggle-motion"),
 };
+
+let motionEnabled = false;
 
 function formatDuration(seconds) {
   const value = Math.max(Number(seconds) || 0, 0);
@@ -43,6 +51,11 @@ function setText(element, value) {
   element.textContent = value ?? "n/a";
 }
 
+function formatDate(value) {
+  if (!value) return "never";
+  return new Date(value).toLocaleString();
+}
+
 async function refreshStatus() {
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -64,6 +77,9 @@ async function refreshStatus() {
     setText(ids.tailscale, status.tailscale.ip4 || (status.tailscale.ok ? "online" : "offline"));
     setText(ids.camera, status.camera.opened ? "streaming" : status.camera.last_error || "offline");
     setText(ids.load, status.host.load_average ? status.host.load_average.map((v) => v.toFixed(2)).join(" ") : "n/a");
+    setText(ids.motionCount, status.motion.event_count);
+    setMotionToggle(status.motion.enabled);
+    setText(ids.lastMotion, status.motion.latest_event ? formatDate(status.motion.latest_event.created_at) : "never");
 
     ids.dot.classList.toggle("ok", Boolean(status.camera.opened || status.camera.last_frame_at));
   } catch (error) {
@@ -72,5 +88,105 @@ async function refreshStatus() {
   }
 }
 
+async function refreshMotionEvents() {
+  try {
+    const response = await fetch("/api/motion", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    setMotionToggle(Boolean(payload.enabled));
+    renderMotionEvents(payload.events || []);
+  } catch (error) {
+    ids.motionEvents.innerHTML = `<div class="empty-state">Could not load motion events.</div>`;
+  }
+}
+
+function setMotionToggle(enabled) {
+  motionEnabled = Boolean(enabled);
+  setText(ids.motionEnabled, motionEnabled ? "enabled" : "disabled");
+  ids.toggleMotion.textContent = motionEnabled ? "Disable motion" : "Enable motion";
+  ids.toggleMotion.classList.toggle("is-on", motionEnabled);
+}
+
+function renderMotionEvents(events) {
+  if (events.length === 0) {
+    ids.motionEvents.innerHTML = `<div class="empty-state">No motion saved yet.</div>`;
+    return;
+  }
+
+  ids.motionEvents.innerHTML = events
+    .map(
+      (event) => `
+        <article class="motion-card">
+          <a href="${event.url}" target="_blank" rel="noreferrer">
+            <img src="${event.url}" alt="Motion event ${event.created_at}">
+          </a>
+          <div class="motion-meta">
+            <strong>${formatDate(event.created_at)}</strong>
+            <span>${event.score?.toFixed ? event.score.toFixed(2) : "?"}% changed · ${formatBytes(event.size)}</span>
+          </div>
+          <button class="delete-motion" type="button" data-filename="${event.filename}">Delete</button>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+async function deleteMotionEvent(filename) {
+  const response = await fetch(`/api/motion/${encodeURIComponent(filename)}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  await refreshMotionEvents();
+  await refreshStatus();
+}
+
+async function clearMotionEvents() {
+  const response = await fetch("/api/motion", { method: "DELETE" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  await refreshMotionEvents();
+  await refreshStatus();
+}
+
+async function setMotionEnabled(enabled) {
+  const response = await fetch("/api/motion/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const payload = await response.json();
+  setMotionToggle(Boolean(payload.enabled));
+}
+
+ids.motionEvents.addEventListener("click", async (event) => {
+  const button = event.target.closest(".delete-motion");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await deleteMotionEvent(button.dataset.filename);
+  } catch (error) {
+    button.disabled = false;
+  }
+});
+
+ids.clearMotion.addEventListener("click", async () => {
+  ids.clearMotion.disabled = true;
+  try {
+    await clearMotionEvents();
+  } finally {
+    ids.clearMotion.disabled = false;
+  }
+});
+
+ids.toggleMotion.addEventListener("click", async () => {
+  ids.toggleMotion.disabled = true;
+  try {
+    await setMotionEnabled(!motionEnabled);
+    await refreshStatus();
+  } finally {
+    ids.toggleMotion.disabled = false;
+  }
+});
+
 refreshStatus();
+refreshMotionEvents();
 setInterval(refreshStatus, 2000);
+setInterval(refreshMotionEvents, 5000);
