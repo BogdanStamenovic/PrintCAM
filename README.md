@@ -176,10 +176,19 @@ PRINTCAM_MOTION_CONFIRM_SECONDS=5
 PRINTCAM_MOTION_CHANGED_PERCENT=1.8
 PRINTCAM_MOTION_PIXEL_DELTA=28
 PRINTCAM_MOTION_MAX_EVENTS=200
-PRINTCAM_MOTION_VIDEO_CODEC=mp4v
+PRINTCAM_MOTION_RECORDING_CODEC=MJPG
+PRINTCAM_FFMPEG_BIN=ffmpeg
+PRINTCAM_MOTION_OUTPUT_VIDEO_CODEC=libx264
 ```
 
 Lower `PRINTCAM_MOTION_CHANGED_PERCENT` if it misses small printer movement. Raise it if lighting flicker creates too many saves. `PRINTCAM_MOTION_CONFIRM_SECONDS` controls both the confirmation window and how long recording continues after the most recent change.
+
+Motion clips are finalized with `ffmpeg` into H.264 MP4 files so browsers can play and scrub them. If you installed PrintCAM before motion videos were added, install `ffmpeg` on the machine:
+
+```bash
+sudo apt-get install ffmpeg
+sudo systemctl restart printcam
+```
 
 You can turn motion detection on and off from the dashboard. That toggle is saved in `PRINTCAM_MOTION_STATE_FILE`, so it survives app restarts.
 

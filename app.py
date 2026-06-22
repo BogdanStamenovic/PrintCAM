@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import socket
 import subprocess
 import threading
@@ -26,7 +27,9 @@ MOTION_CONFIRM_SECONDS = float(os.environ.get("PRINTCAM_MOTION_CONFIRM_SECONDS",
 MOTION_CHANGED_PERCENT = float(os.environ.get("PRINTCAM_MOTION_CHANGED_PERCENT", "1.8"))
 MOTION_PIXEL_DELTA = int(os.environ.get("PRINTCAM_MOTION_PIXEL_DELTA", "28"))
 MOTION_MAX_EVENTS = int(os.environ.get("PRINTCAM_MOTION_MAX_EVENTS", "200"))
-MOTION_VIDEO_CODEC = os.environ.get("PRINTCAM_MOTION_VIDEO_CODEC", "mp4v")
+MOTION_RECORDING_CODEC = os.environ.get("PRINTCAM_MOTION_RECORDING_CODEC", "MJPG")
+MOTION_FFMPEG_BIN = os.environ.get("PRINTCAM_FFMPEG_BIN", "ffmpeg")
+MOTION_OUTPUT_VIDEO_CODEC = os.environ.get("PRINTCAM_MOTION_OUTPUT_VIDEO_CODEC", "libx264")
 MOTION_TIMESTAMP_PATTERN = r"\d{8}-\d{6}-\d{3}"
 MOTION_FILENAME_RE = re.compile(
     rf"^motion-(?P<start>{MOTION_TIMESTAMP_PATTERN})(?:-to-(?P<end>{MOTION_TIMESTAMP_PATTERN}))?-score-(?P<score>[0-9.]+)\.mp4$"
@@ -166,11 +169,9 @@ class CameraStream:
 
     def start_motion_recording(self, frame, score, now):
         ensure_motion_dir()
-        stamp = datetime.fromtimestamp(now).strftime("%Y%m%d-%H%M%S")
-        millis = int((now % 1) * 1000)
-        temp_path = MOTION_DIR / f".motion-{stamp}-{millis:03d}.recording.mp4"
+        temp_path = MOTION_DIR / f".motion-{motion_filename_stamp(now)}.recording.avi"
         height, width = frame.shape[:2]
-        codec = (MOTION_VIDEO_CODEC or "mp4v")[:4].ljust(4)
+        codec = (MOTION_RECORDING_CODEC or "MJPG")[:4].ljust(4)
         writer = cv2.VideoWriter(
             str(temp_path),
             cv2.VideoWriter_fourcc(*codec),
@@ -210,8 +211,13 @@ class CameraStream:
         start_stamp = motion_filename_stamp(started_at)
         end_stamp = motion_filename_stamp(finished_at)
         final_path = MOTION_DIR / f"motion-{start_stamp}-to-{end_stamp}-score-{max_score:.2f}.mp4"
-        temp_path.replace(final_path)
-        prune_motion_events()
+        if encode_motion_video(temp_path, final_path):
+            temp_path.unlink(missing_ok=True)
+            prune_motion_events()
+            return
+
+        self.last_error = "Could not encode motion video for browser playback"
+        temp_path.unlink(missing_ok=True)
 
     def discard_motion_recording(self):
         temp_path = self.motion_recording_temp_path
@@ -377,6 +383,42 @@ def healthz():
             "service_uptime_seconds": int(time.time() - SERVICE_STARTED_AT),
         }
     )
+
+
+@app.post("/api/display/sleep")
+def api_display_sleep():
+    """Attempt to turn the display off while leaving the system running.
+
+    Tries a helper script at scripts/screen_off.sh first, then falls back to
+    common commands like vcgencmd or xset.
+    """
+    script_path = Path(__file__).parent / "scripts" / "screen_off.sh"
+    env = os.environ.copy()
+    if "DISPLAY" not in env:
+        env["DISPLAY"] = ":0"
+
+    if script_path.exists():
+        try:
+            completed = subprocess.run(["/bin/bash", str(script_path)], capture_output=True, text=True, env=env, timeout=10)
+            if completed.returncode == 0:
+                return jsonify({"ok": True})
+            return jsonify({"ok": False, "stderr": completed.stderr}), 500
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    # Fallback attempts
+    fallbacks = [(["vcgencmd", "display_power", "0"], "vcgencmd"), (["xset", "dpms", "force", "off"], "xset")]
+    for cmd, name in fallbacks:
+        try:
+            completed = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=5)
+            if completed.returncode == 0:
+                return jsonify({"ok": True, "method": name})
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            continue
+
+    return jsonify({"ok": False, "error": "no method succeeded"}), 500
 
 
 def generate_frames():
@@ -606,6 +648,48 @@ def parse_motion_filename_stamp(value):
     except ValueError:
         return None
     return parsed.timestamp()
+
+
+def encode_motion_video(input_path, output_path):
+    ffmpeg = shutil.which(MOTION_FFMPEG_BIN)
+    if ffmpeg is None:
+        return False
+
+    temp_output = output_path.with_suffix(".encoding.mp4")
+    temp_output.unlink(missing_ok=True)
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(input_path),
+            "-an",
+            "-c:v",
+            MOTION_OUTPUT_VIDEO_CODEC,
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(temp_output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if completed.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
+        temp_output.unlink(missing_ok=True)
+        return False
+
+    temp_output.replace(output_path)
+    return True
 
 
 def prune_motion_events():

@@ -31,7 +31,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "==> Installing OS packages"
 apt-get update
-apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils rsync network-manager openssh-server dconf-cli
+apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils ffmpeg rsync network-manager openssh-server dconf-cli
 
 echo "==> Selecting camera"
 if [[ -n "$CAMERA_DEVICE" ]]; then
@@ -253,7 +253,9 @@ PRINTCAM_MOTION_CONFIRM_SECONDS=5
 PRINTCAM_MOTION_CHANGED_PERCENT=1.8
 PRINTCAM_MOTION_PIXEL_DELTA=28
 PRINTCAM_MOTION_MAX_EVENTS=200
-PRINTCAM_MOTION_VIDEO_CODEC=mp4v
+PRINTCAM_MOTION_RECORDING_CODEC=MJPG
+PRINTCAM_FFMPEG_BIN=ffmpeg
+PRINTCAM_MOTION_OUTPUT_VIDEO_CODEC=libx264
 PRINTCAM_SECRET_KEY=$SECRET_KEY
 PRINTCAM_PASSWORD_HASH=$PASSWORD_HASH
 EOF_CONFIG

@@ -19,6 +19,7 @@ const ids = {
   motionEvents: document.querySelector("#motion-events"),
   clearMotion: document.querySelector("#clear-motion"),
   toggleMotion: document.querySelector("#toggle-motion"),
+  screenSleep: document.querySelector("#screen-sleep"),
 };
 
 let motionEnabled = false;
@@ -202,6 +203,25 @@ ids.toggleMotion.addEventListener("click", async () => {
     ids.toggleMotion.disabled = false;
   }
 });
+
+if (ids.screenSleep) {
+  ids.screenSleep.addEventListener("click", async () => {
+    ids.screenSleep.disabled = true;
+    try {
+      const res = await fetch("/api/display/sleep", { method: "POST" });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      // screen will turn off; nothing further needed here
+    } catch (err) {
+      console.error(err);
+      alert("Failed to turn screen off: " + (err && err.message));
+    } finally {
+      ids.screenSleep.disabled = false;
+    }
+  });
+}
 
 refreshStatus();
 refreshMotionEvents();
