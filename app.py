@@ -22,11 +22,15 @@ SERVICE_STARTED_AT = time.time()
 MOTION_ENABLED = os.environ.get("PRINTCAM_MOTION_ENABLED", "1") == "1"
 MOTION_DIR = Path(os.environ.get("PRINTCAM_MOTION_DIR", "/var/lib/printcam/motion"))
 MOTION_STATE_FILE = Path(os.environ.get("PRINTCAM_MOTION_STATE_FILE", "/var/lib/printcam/motion-enabled"))
-MOTION_MIN_INTERVAL = float(os.environ.get("PRINTCAM_MOTION_MIN_INTERVAL", "8"))
+MOTION_CONFIRM_SECONDS = float(os.environ.get("PRINTCAM_MOTION_CONFIRM_SECONDS", "5"))
 MOTION_CHANGED_PERCENT = float(os.environ.get("PRINTCAM_MOTION_CHANGED_PERCENT", "1.8"))
 MOTION_PIXEL_DELTA = int(os.environ.get("PRINTCAM_MOTION_PIXEL_DELTA", "28"))
 MOTION_MAX_EVENTS = int(os.environ.get("PRINTCAM_MOTION_MAX_EVENTS", "200"))
-MOTION_FILENAME_RE = re.compile(r"^motion-\d{8}-\d{6}-\d{3}-score-[0-9.]+\.jpg$")
+MOTION_VIDEO_CODEC = os.environ.get("PRINTCAM_MOTION_VIDEO_CODEC", "mp4v")
+MOTION_TIMESTAMP_PATTERN = r"\d{8}-\d{6}-\d{3}"
+MOTION_FILENAME_RE = re.compile(
+    rf"^motion-(?P<start>{MOTION_TIMESTAMP_PATTERN})(?:-to-(?P<end>{MOTION_TIMESTAMP_PATTERN}))?-score-(?P<score>[0-9.]+)\.mp4$"
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("PRINTCAM_SECRET_KEY", "dev-only-change-me")
@@ -54,6 +58,13 @@ class CameraStream:
         self.last_motion_at = None
         self.last_motion_score = 0.0
         self.previous_motion_frame = None
+        self.motion_video_writer = None
+        self.motion_recording_temp_path = None
+        self.motion_recording_started_at = None
+        self.motion_recording_last_change_at = None
+        self.motion_recording_change_count = 0
+        self.motion_recording_max_score = 0.0
+        self.motion_recording_confirmed = False
 
     def open(self):
         with self.lock:
@@ -93,12 +104,13 @@ class CameraStream:
             self.last_frame = encoded.tobytes()
             self.last_frame_at = time.time()
             self.last_error = None
-            self.detect_motion(frame, self.last_frame)
+            self.detect_motion(frame)
             return self.last_frame
 
-    def detect_motion(self, frame, jpeg_bytes):
+    def detect_motion(self, frame):
         if not motion_enabled():
             self.previous_motion_frame = None
+            self.discard_motion_recording()
             return
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -117,12 +129,106 @@ class CameraStream:
 
         now = time.time()
         if score < MOTION_CHANGED_PERCENT:
-            return
-        if self.last_motion_at and now - self.last_motion_at < MOTION_MIN_INTERVAL:
+            self.update_motion_recording(frame, False, score, now)
             return
 
-        save_motion_event(jpeg_bytes, score, now)
+        self.update_motion_recording(frame, True, score, now)
         self.last_motion_at = now
+
+    def update_motion_recording(self, frame, changed, score, now):
+        if self.motion_video_writer is None:
+            if changed:
+                self.start_motion_recording(frame, score, now)
+            return
+
+        if not self.write_motion_frame(frame):
+            self.discard_motion_recording()
+            return
+
+        if changed:
+            if not self.motion_recording_confirmed and now - self.motion_recording_started_at > MOTION_CONFIRM_SECONDS:
+                self.discard_motion_recording()
+                self.start_motion_recording(frame, score, now)
+                return
+
+            self.motion_recording_last_change_at = now
+            self.motion_recording_change_count += 1
+            self.motion_recording_max_score = max(self.motion_recording_max_score, score)
+            if self.motion_recording_change_count >= 2:
+                self.motion_recording_confirmed = True
+            return
+
+        if self.motion_recording_confirmed:
+            if now - self.motion_recording_last_change_at >= MOTION_CONFIRM_SECONDS:
+                self.finalize_motion_recording(now)
+        elif now - self.motion_recording_started_at >= MOTION_CONFIRM_SECONDS:
+            self.discard_motion_recording()
+
+    def start_motion_recording(self, frame, score, now):
+        ensure_motion_dir()
+        stamp = datetime.fromtimestamp(now).strftime("%Y%m%d-%H%M%S")
+        millis = int((now % 1) * 1000)
+        temp_path = MOTION_DIR / f".motion-{stamp}-{millis:03d}.recording.mp4"
+        height, width = frame.shape[:2]
+        codec = (MOTION_VIDEO_CODEC or "mp4v")[:4].ljust(4)
+        writer = cv2.VideoWriter(
+            str(temp_path),
+            cv2.VideoWriter_fourcc(*codec),
+            max(FRAME_FPS, 1),
+            (width, height),
+        )
+        if not writer.isOpened():
+            self.last_error = "Could not start motion video recording"
+            temp_path.unlink(missing_ok=True)
+            return
+
+        self.motion_video_writer = writer
+        self.motion_recording_temp_path = temp_path
+        self.motion_recording_started_at = now
+        self.motion_recording_last_change_at = now
+        self.motion_recording_change_count = 1
+        self.motion_recording_max_score = score
+        self.motion_recording_confirmed = False
+        if not self.write_motion_frame(frame):
+            self.discard_motion_recording()
+
+    def write_motion_frame(self, frame):
+        if self.motion_video_writer is None:
+            return False
+        self.motion_video_writer.write(frame)
+        return True
+
+    def finalize_motion_recording(self, finished_at):
+        temp_path = self.motion_recording_temp_path
+        started_at = self.motion_recording_started_at
+        max_score = self.motion_recording_max_score
+        self.release_motion_writer()
+
+        if temp_path is None or started_at is None:
+            return
+
+        start_stamp = motion_filename_stamp(started_at)
+        end_stamp = motion_filename_stamp(finished_at)
+        final_path = MOTION_DIR / f"motion-{start_stamp}-to-{end_stamp}-score-{max_score:.2f}.mp4"
+        temp_path.replace(final_path)
+        prune_motion_events()
+
+    def discard_motion_recording(self):
+        temp_path = self.motion_recording_temp_path
+        self.release_motion_writer()
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+    def release_motion_writer(self):
+        if self.motion_video_writer:
+            self.motion_video_writer.release()
+        self.motion_video_writer = None
+        self.motion_recording_temp_path = None
+        self.motion_recording_started_at = None
+        self.motion_recording_last_change_at = None
+        self.motion_recording_change_count = 0
+        self.motion_recording_max_score = 0.0
+        self.motion_recording_confirmed = False
 
     def status(self):
         with self.lock:
@@ -135,6 +241,8 @@ class CameraStream:
                 "motion_enabled": motion_enabled(),
                 "last_motion_at": self.last_motion_at,
                 "last_motion_score": self.last_motion_score,
+                "motion_recording": self.motion_video_writer is not None,
+                "motion_recording_confirmed": self.motion_recording_confirmed,
             }
 
     def _release_locked(self):
@@ -252,7 +360,7 @@ def motion_file(filename):
     path = motion_event_path(filename)
     if path is None or not path.exists():
         return Response("event not found\n", status=404, mimetype="text/plain")
-    return send_from_directory(MOTION_DIR, filename, mimetype="image/jpeg")
+    return send_from_directory(MOTION_DIR, filename, mimetype="video/mp4")
 
 
 @app.get("/healthz")
@@ -422,16 +530,6 @@ def set_motion_enabled(enabled):
     MOTION_STATE_FILE.write_text("1\n" if enabled else "0\n", encoding="utf-8")
 
 
-def save_motion_event(jpeg_bytes, score, created_at):
-    ensure_motion_dir()
-    stamp = datetime.fromtimestamp(created_at).strftime("%Y%m%d-%H%M%S")
-    millis = int((created_at % 1) * 1000)
-    filename = f"motion-{stamp}-{millis:03d}-score-{score:.2f}.jpg"
-    path = MOTION_DIR / filename
-    path.write_bytes(jpeg_bytes)
-    prune_motion_events()
-
-
 def motion_event_path(filename):
     if not MOTION_FILENAME_RE.match(filename):
         return None
@@ -446,21 +544,26 @@ def motion_event_path(filename):
 def list_motion_events():
     ensure_motion_dir()
     events = []
-    for path in MOTION_DIR.glob("motion-*.jpg"):
-        if not MOTION_FILENAME_RE.match(path.name):
+    for path in MOTION_DIR.glob("motion-*.mp4"):
+        details = parse_motion_filename(path.name)
+        if details is None:
             continue
         stat = path.stat()
-        score = parse_motion_score(path.name)
+        started_at = details["started_at"] or stat.st_mtime
+        ended_at = details["ended_at"] or stat.st_mtime
         events.append(
             {
                 "filename": path.name,
                 "url": url_for("motion_file", filename=path.name),
-                "created_at": iso_from_timestamp(stat.st_mtime),
+                "created_at": iso_from_timestamp(started_at),
+                "started_at": iso_from_timestamp(started_at),
+                "ended_at": iso_from_timestamp(ended_at),
+                "duration_seconds": max(0, round(ended_at - started_at, 1)),
                 "size": stat.st_size,
-                "score": score,
+                "score": details["score"],
             }
         )
-    events.sort(key=lambda item: item["created_at"], reverse=True)
+    events.sort(key=lambda item: item["started_at"], reverse=True)
     return events
 
 
@@ -472,22 +575,41 @@ def motion_status():
         "latest_event": events[0] if events else None,
         "directory": str(MOTION_DIR),
         "changed_percent_threshold": MOTION_CHANGED_PERCENT,
-        "min_interval_seconds": MOTION_MIN_INTERVAL,
+        "confirm_seconds": MOTION_CONFIRM_SECONDS,
     }
 
 
-def parse_motion_score(filename):
-    match = re.search(r"-score-([0-9.]+)\.jpg$", filename)
+def motion_filename_stamp(timestamp):
+    stamp = datetime.fromtimestamp(timestamp).strftime("%Y%m%d-%H%M%S")
+    millis = int((timestamp % 1) * 1000)
+    return f"{stamp}-{millis:03d}"
+
+
+def parse_motion_filename(filename):
+    match = MOTION_FILENAME_RE.match(filename)
     if not match:
         return None
+    start = parse_motion_filename_stamp(match.group("start"))
+    end = parse_motion_filename_stamp(match.group("end")) if match.group("end") else None
     try:
-        return float(match.group(1))
+        score = float(match.group("score"))
+    except ValueError:
+        score = None
+    return {"started_at": start, "ended_at": end, "score": score}
+
+
+def parse_motion_filename_stamp(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y%m%d-%H%M%S-%f")
     except ValueError:
         return None
+    return parsed.timestamp()
 
 
 def prune_motion_events():
-    events = sorted(MOTION_DIR.glob("motion-*.jpg"), key=lambda path: path.stat().st_mtime, reverse=True)
+    events = sorted(MOTION_DIR.glob("motion-*.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
     for path in events[MOTION_MAX_EVENTS:]:
         if MOTION_FILENAME_RE.match(path.name):
             path.unlink(missing_ok=True)

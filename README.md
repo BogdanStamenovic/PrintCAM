@@ -8,7 +8,7 @@ It is intended to be hosted on your Tailnet with Tailscale, then kept alive by `
 
 - Password login page
 - Live MJPEG camera stream from `/dev/video2`
-- Motion detection that saves movement snapshots
+- Motion detection that saves confirmed movement videos
 - Motion event gallery with enable, disable, open, and delete controls
 - Health dashboard with uptime, load, CPU, memory, disk, temperature, network speed, boot time, hostname, service time, Tailscale status, and camera status
 - Linux Mint auto-install script
@@ -157,7 +157,7 @@ sudo systemctl restart printcam
 
 ## Motion Detection
 
-Motion snapshots are saved when the camera image changes enough between frames. They show up in the Saved movement section on the dashboard.
+Motion videos start recording when the camera image changes enough between frames. If there is no second change within 5 seconds, the temporary clip is discarded. If there is another change, one continuous clip is saved and recording continues until there have been no more changes for 5 seconds. Saved clips are displayed as recording start time - end time in the dashboard, with normal video controls for playback and scrubbing.
 
 Useful settings in `/etc/printcam/printcam.env`:
 
@@ -165,13 +165,14 @@ Useful settings in `/etc/printcam/printcam.env`:
 PRINTCAM_MOTION_ENABLED=1
 PRINTCAM_MOTION_DIR=/var/lib/printcam/motion
 PRINTCAM_MOTION_STATE_FILE=/var/lib/printcam/motion-enabled
-PRINTCAM_MOTION_MIN_INTERVAL=8
+PRINTCAM_MOTION_CONFIRM_SECONDS=5
 PRINTCAM_MOTION_CHANGED_PERCENT=1.8
 PRINTCAM_MOTION_PIXEL_DELTA=28
 PRINTCAM_MOTION_MAX_EVENTS=200
+PRINTCAM_MOTION_VIDEO_CODEC=mp4v
 ```
 
-Lower `PRINTCAM_MOTION_CHANGED_PERCENT` if it misses small printer movement. Raise it if lighting flicker creates too many saves. `PRINTCAM_MOTION_MIN_INTERVAL` prevents one long move from saving hundreds of images.
+Lower `PRINTCAM_MOTION_CHANGED_PERCENT` if it misses small printer movement. Raise it if lighting flicker creates too many saves. `PRINTCAM_MOTION_CONFIRM_SECONDS` controls both the confirmation window and how long recording continues after the most recent change.
 
 You can turn motion detection on and off from the dashboard. That toggle is saved in `PRINTCAM_MOTION_STATE_FILE`, so it survives app restarts.
 

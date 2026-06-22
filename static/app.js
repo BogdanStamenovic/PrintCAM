@@ -57,6 +57,23 @@ function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
+function formatTime(value) {
+  if (!value) return "unknown";
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatTimeRange(event) {
+  return `${formatTime(event.started_at || event.created_at)} - ${formatTime(event.ended_at || event.created_at)}`;
+}
+
+function formatSeconds(seconds) {
+  const value = Math.max(Number(seconds) || 0, 0);
+  const minutes = Math.floor(value / 60);
+  const remainingSeconds = Math.round(value % 60);
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+}
+
 async function refreshStatus() {
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -119,12 +136,10 @@ function renderMotionEvents(events) {
     .map(
       (event) => `
         <article class="motion-card">
-          <a href="${event.url}" target="_blank" rel="noreferrer">
-            <img src="${event.url}" alt="Motion event ${event.created_at}">
-          </a>
+          <video src="${event.url}" preload="metadata" muted controls aria-label="Motion event ${formatTimeRange(event)}"></video>
           <div class="motion-meta">
-            <strong>${formatDate(event.created_at)}</strong>
-            <span>${event.score?.toFixed ? event.score.toFixed(2) : "?"}% changed · ${formatBytes(event.size)}</span>
+            <strong>${formatTimeRange(event)}</strong>
+            <span>${formatDate(event.started_at || event.created_at)} · ${formatSeconds(event.duration_seconds)} · ${formatBytes(event.size)}</span>
           </div>
           <button class="delete-motion" type="button" data-filename="${event.filename}">Delete</button>
         </article>
