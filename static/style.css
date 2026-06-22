@@ -1,0 +1,262 @@
+:root {
+  color-scheme: dark;
+  --bg: #111412;
+  --panel: #1b211e;
+  --panel-soft: #222a26;
+  --text: #f3f6ef;
+  --muted: #aeb9ae;
+  --line: #344038;
+  --good: #48d597;
+  --bad: #ff6868;
+  --accent: #f5c451;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px clamp(16px, 3vw, 36px);
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: clamp(22px, 3vw, 34px);
+}
+
+h2 {
+  font-size: 20px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+  min-height: calc(100vh - 82px);
+}
+
+.camera-stage {
+  min-width: 0;
+  padding: clamp(14px, 2vw, 26px);
+}
+
+.stream-shell {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: calc(100vh - 134px);
+  overflow: hidden;
+  background: #050605;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+#camera-stream {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: calc(100vh - 136px);
+  object-fit: contain;
+}
+
+.status-panel {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: clamp(16px, 2vw, 24px);
+}
+
+.status-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--bad);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--bad), transparent 25%);
+}
+
+.dot.ok {
+  background: var(--good);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--good), transparent 25%);
+}
+
+.metric-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 54px;
+  padding: 12px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.metric span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.metric strong {
+  max-width: 58%;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-size: 15px;
+}
+
+.ghost-button,
+.login-form button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel-soft);
+  cursor: pointer;
+}
+
+.ghost-button {
+  padding: 0 16px;
+}
+
+.ghost-button:hover,
+.login-form button:hover {
+  border-color: var(--accent);
+}
+
+.login-body {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 18px;
+}
+
+.login-panel {
+  width: min(100%, 380px);
+  padding: 28px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.login-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.login-form label {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.login-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: #0d100e;
+}
+
+.login-form button {
+  margin-top: 4px;
+  font-weight: 800;
+}
+
+.alert {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--bad), transparent 35%);
+  border-radius: 8px;
+  color: #ffd8d8;
+  background: color-mix(in srgb, var(--bad), transparent 86%);
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .status-panel {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .stream-shell {
+    min-height: 48vh;
+  }
+
+  #camera-stream {
+    max-height: 62vh;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ghost-button {
+    width: 100%;
+  }
+
+  .topbar form {
+    width: 100%;
+  }
+
+  .metric {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .metric strong {
+    max-width: 100%;
+    text-align: left;
+  }
+}

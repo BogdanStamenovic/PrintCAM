@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PrintCAM</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PrintCAM</p>
+        <h1>{{ camera_device }}</h1>
+      </div>
+      <form action="{{ url_for('logout') }}" method="post">
+        <button class="ghost-button" type="submit">Log out</button>
+      </form>
+    </header>
+
+    <main class="layout">
+      <section class="camera-stage">
+        <div class="stream-shell">
+          <img id="camera-stream" src="{{ url_for('video') }}" alt="Live camera stream">
+        </div>
+      </section>
+
+      <aside class="status-panel">
+        <div class="status-heading">
+          <h2>Health</h2>
+          <span id="health-dot" class="dot"></span>
+        </div>
+        <div class="metric-grid">
+          <div class="metric">
+            <span>Host</span>
+            <strong id="host">...</strong>
+          </div>
+          <div class="metric">
+            <span>System uptime</span>
+            <strong id="system-uptime">...</strong>
+          </div>
+          <div class="metric">
+            <span>App uptime</span>
+            <strong id="service-uptime">...</strong>
+          </div>
+          <div class="metric">
+            <span>CPU</span>
+            <strong id="cpu">...</strong>
+          </div>
+          <div class="metric">
+            <span>Memory</span>
+            <strong id="memory">...</strong>
+          </div>
+          <div class="metric">
+            <span>Disk</span>
+            <strong id="disk">...</strong>
+          </div>
+          <div class="metric">
+            <span>Temperature</span>
+            <strong id="temperature">...</strong>
+          </div>
+          <div class="metric">
+            <span>Network down</span>
+            <strong id="net-down">...</strong>
+          </div>
+          <div class="metric">
+            <span>Network up</span>
+            <strong id="net-up">...</strong>
+          </div>
+          <div class="metric">
+            <span>Tailscale</span>
+            <strong id="tailscale">...</strong>
+          </div>
+          <div class="metric">
+            <span>Camera</span>
+            <strong id="camera">...</strong>
+          </div>
+          <div class="metric">
+            <span>Load</span>
+            <strong id="load">...</strong>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

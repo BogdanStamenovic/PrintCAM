@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PrintCAM Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body class="login-body">
+    <main class="login-panel">
+      <p class="eyebrow">PrintCAM</p>
+      <h1>Camera access</h1>
+      {% if missing_password %}
+        <div class="alert">No password is configured. Run the installer or password reset script.</div>
+      {% else %}
+        <form method="post" class="login-form">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+          {% if error %}
+            <div class="alert">{{ error }}</div>
+          {% endif %}
+          <button type="submit">Log in</button>
+        </form>
+      {% endif %}
+    </main>
+  </body>
+</html>

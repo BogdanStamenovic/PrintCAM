@@ -1,0 +1,17 @@
+[Unit]
+Description=PrintCAM camera dashboard
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=printcam
+Group=video
+WorkingDirectory=/opt/printcam
+EnvironmentFile=/etc/printcam/printcam.env
+ExecStart=/opt/printcam/scripts/run_server.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
