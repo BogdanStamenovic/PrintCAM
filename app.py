@@ -397,14 +397,28 @@ def api_display_sleep():
     if "DISPLAY" not in env:
         env["DISPLAY"] = ":0"
 
+    script_commands = []
+    last_error = ""
     if script_path.exists():
+        if os.access(script_path, os.X_OK):
+            script_commands.append([str(script_path)])
+        script_commands.append(["/bin/bash", str(script_path)])
+        sudo_path = shutil.which("sudo")
+        if sudo_path:
+            script_commands.insert(0, [sudo_path, "-n", str(script_path)])
+
+    for command in script_commands:
         try:
-            completed = subprocess.run(["/bin/bash", str(script_path)], capture_output=True, text=True, env=env, timeout=10)
+            completed = subprocess.run(command, capture_output=True, text=True, env=env, timeout=10)
             if completed.returncode == 0:
                 return jsonify({"ok": True})
-            return jsonify({"ok": False, "stderr": completed.stderr}), 500
+            if command[0] == sudo_path or "a password is required" in completed.stderr.lower():
+                continue
+            last_error = completed.stderr.strip() or completed.stdout.strip()
         except Exception as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            last_error = str(exc)
+    if script_path.exists():
+        return jsonify({"ok": False, "error": last_error or "screen helper failed"}), 500
 
     # Fallback attempts
     fallbacks = [(["vcgencmd", "display_power", "0"], "vcgencmd"), (["xset", "dpms", "force", "off"], "xset")]

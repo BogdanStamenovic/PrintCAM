@@ -23,6 +23,7 @@ done
 rm -f /etc/systemd/system/printcam.service
 rm -f /etc/systemd/system/printcam-wifi-reconnect.service
 rm -f /etc/systemd/system/printcam-wifi-reconnect.timer
+rm -f /etc/sudoers.d/printcam-display
 rm -f /etc/systemd/logind.conf.d/99-printcam-power.conf
 rm -f /etc/dconf/db/local.d/99-printcam-power
 dconf update 2>/dev/null || true

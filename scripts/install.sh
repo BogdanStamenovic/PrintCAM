@@ -9,6 +9,7 @@ WIFI_CONFIG_FILE="$CONFIG_DIR/wifi.env"
 SERVICE_FILE="/etc/systemd/system/printcam.service"
 WIFI_SERVICE_FILE="/etc/systemd/system/printcam-wifi-reconnect.service"
 WIFI_TIMER_FILE="/etc/systemd/system/printcam-wifi-reconnect.timer"
+SUDOERS_FILE="/etc/sudoers.d/printcam-display"
 POWER_CONFIG_DIR="/etc/systemd/logind.conf.d"
 POWER_CONFIG_FILE="$POWER_CONFIG_DIR/99-printcam-power.conf"
 DCONF_PROFILE_FILE="/etc/dconf/profile/user"
@@ -31,7 +32,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "==> Installing OS packages"
 apt-get update
-apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils ffmpeg rsync network-manager openssh-server dconf-cli
+apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils ffmpeg rsync network-manager openssh-server dconf-cli sudo
 
 echo "==> Selecting camera"
 if [[ -n "$CAMERA_DEVICE" ]]; then
@@ -269,7 +270,13 @@ cp "$APP_DIR/systemd/printcam-wifi-reconnect.timer" "$WIFI_TIMER_FILE"
 chmod +x "$APP_DIR/scripts/"*.sh
 chown -R "$APP_NAME:$APP_NAME" "$APP_DIR"
 chown root:root "$APP_DIR/scripts/run_server.sh"
+chown root:root "$APP_DIR/scripts/screen_off.sh"
 chown root:root "$APP_DIR/scripts/wifi-reconnect.sh"
+
+cat > "$SUDOERS_FILE" <<EOF_SUDOERS
+$APP_NAME ALL=(root) NOPASSWD: $APP_DIR/scripts/screen_off.sh
+EOF_SUDOERS
+chmod 440 "$SUDOERS_FILE"
 
 systemctl daemon-reload
 systemctl enable printcam.service
