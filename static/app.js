@@ -12,6 +12,7 @@ const ids = {
   wifi: document.querySelector("#wifi"),
   tailscale: document.querySelector("#tailscale"),
   camera: document.querySelector("#camera"),
+  audio: document.querySelector("#audio"),
   load: document.querySelector("#load"),
   motionCount: document.querySelector("#motion-count"),
   motionEnabled: document.querySelector("#motion-enabled"),
@@ -20,9 +21,15 @@ const ids = {
   clearMotion: document.querySelector("#clear-motion"),
   toggleMotion: document.querySelector("#toggle-motion"),
   screenSleep: document.querySelector("#screen-sleep"),
+  cameraStream: document.querySelector("#camera-stream"),
+  cameraDevice: document.querySelector("#camera-device"),
+  applyCamera: document.querySelector("#apply-camera"),
+  audioSource: document.querySelector("#audio-source"),
+  toggleAudio: document.querySelector("#toggle-audio"),
 };
 
 let motionEnabled = false;
+let audioEnabled = false;
 
 function formatDuration(seconds) {
   const value = Math.max(Number(seconds) || 0, 0);
@@ -51,6 +58,14 @@ function formatRate(bytesPerSecond) {
 
 function setText(element, value) {
   element.textContent = value ?? "n/a";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function formatDate(value) {
@@ -96,6 +111,7 @@ async function refreshStatus() {
     setText(ids.wifi, status.network.wifi_ssid || "offline");
     setText(ids.tailscale, status.tailscale.ip4 || (status.tailscale.ok ? "online" : "offline"));
     setText(ids.camera, status.camera.opened ? "streaming" : status.camera.last_error || "offline");
+    setAudioToggle(Boolean(status.audio.enabled), status.audio.last_error);
     setText(ids.load, status.host.load_average ? status.host.load_average.map((v) => v.toFixed(2)).join(" ") : "n/a");
     setText(ids.motionCount, status.motion.event_count);
     setMotionToggle(status.motion.enabled);
@@ -125,6 +141,51 @@ function setMotionToggle(enabled) {
   setText(ids.motionEnabled, motionEnabled ? "enabled" : "disabled");
   ids.toggleMotion.textContent = motionEnabled ? "Disable motion" : "Enable motion";
   ids.toggleMotion.classList.toggle("is-on", motionEnabled);
+}
+
+function setAudioToggle(enabled, error) {
+  audioEnabled = Boolean(enabled);
+  setText(ids.audio, audioEnabled ? "playing" : error || "off");
+  ids.toggleAudio.textContent = audioEnabled ? "Stop audio" : "Start audio";
+  ids.toggleAudio.classList.toggle("is-on", audioEnabled);
+}
+
+function optionLabelForCamera(device, path) {
+  const name = device.name === path ? path : `${device.name} (${path})`;
+  return path === device.selected_path ? `${name} · stream` : name;
+}
+
+async function refreshCameraDevices() {
+  try {
+    const response = await fetch("/api/cameras", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const options = [];
+    for (const device of payload.devices || []) {
+      for (const path of device.paths || []) {
+        options.push(`<option value="${escapeHtml(path)}">${escapeHtml(optionLabelForCamera(device, path))}</option>`);
+      }
+    }
+    ids.cameraDevice.innerHTML = options.join("") || `<option value="">No cameras found</option>`;
+    ids.cameraDevice.value = payload.active_device || "";
+  } catch (error) {
+    ids.cameraDevice.innerHTML = `<option value="">Could not load cameras</option>`;
+  }
+}
+
+async function refreshAudioSources() {
+  try {
+    const response = await fetch("/api/audio", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    ids.audioSource.innerHTML = (payload.sources || [])
+      .map((source) => `<option value="${escapeHtml(source.name)}">${escapeHtml(source.description || source.name)}</option>`)
+      .join("") || `<option value="">No audio inputs found</option>`;
+    ids.audioSource.value = payload.relay.source || payload.default_source || "";
+    setAudioToggle(Boolean(payload.relay.enabled), payload.relay.last_error);
+  } catch (error) {
+    ids.audioSource.innerHTML = `<option value="">Could not load audio</option>`;
+  }
 }
 
 function renderMotionEvents(events) {
@@ -174,6 +235,28 @@ async function setMotionEnabled(enabled) {
   setMotionToggle(Boolean(payload.enabled));
 }
 
+async function setCameraDevice(device) {
+  const response = await fetch("/api/camera/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  ids.cameraStream.src = `/video?ts=${Date.now()}`;
+  await refreshCameraDevices();
+}
+
+async function setAudioEnabled(enabled) {
+  const response = await fetch("/api/audio/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, source: ids.audioSource.value }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const payload = await response.json();
+  setAudioToggle(Boolean(payload.relay.enabled), payload.relay.last_error);
+}
+
 ids.motionEvents.addEventListener("click", async (event) => {
   const button = event.target.closest(".delete-motion");
   if (!button) return;
@@ -204,6 +287,26 @@ ids.toggleMotion.addEventListener("click", async () => {
   }
 });
 
+ids.applyCamera.addEventListener("click", async () => {
+  ids.applyCamera.disabled = true;
+  try {
+    await setCameraDevice(ids.cameraDevice.value);
+    await refreshStatus();
+  } finally {
+    ids.applyCamera.disabled = false;
+  }
+});
+
+ids.toggleAudio.addEventListener("click", async () => {
+  ids.toggleAudio.disabled = true;
+  try {
+    await setAudioEnabled(!audioEnabled);
+    await refreshStatus();
+  } finally {
+    ids.toggleAudio.disabled = false;
+  }
+});
+
 if (ids.screenSleep) {
   ids.screenSleep.addEventListener("click", async () => {
     ids.screenSleep.disabled = true;
@@ -224,6 +327,9 @@ if (ids.screenSleep) {
 }
 
 refreshStatus();
+refreshCameraDevices();
+refreshAudioSources();
 refreshMotionEvents();
 setInterval(refreshStatus, 2000);
+setInterval(refreshAudioSources, 10000);
 setInterval(refreshMotionEvents, 5000);

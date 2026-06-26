@@ -26,6 +26,23 @@
           <img id="camera-stream" src="{{ url_for('video') }}" alt="Live camera stream">
         </div>
 
+        <section class="control-section">
+          <div class="device-control">
+            <label for="camera-device">Camera stream</label>
+            <div class="control-row">
+              <select id="camera-device"></select>
+              <button id="apply-camera" class="ghost-button" type="button">Use camera</button>
+            </div>
+          </div>
+          <div class="device-control">
+            <label for="audio-source">Audio input</label>
+            <div class="control-row">
+              <select id="audio-source"></select>
+              <button id="toggle-audio" class="ghost-button toggle-button" type="button">Audio ...</button>
+            </div>
+          </div>
+        </section>
+
         <section class="motion-section">
           <div class="section-title">
             <div>
@@ -96,6 +113,10 @@
           <div class="metric">
             <span>Camera</span>
             <strong id="camera">...</strong>
+          </div>
+          <div class="metric">
+            <span>Audio relay</span>
+            <strong id="audio">...</strong>
           </div>
           <div class="metric">
             <span>Load</span>

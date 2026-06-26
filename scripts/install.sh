@@ -20,6 +20,7 @@ DATA_DIR="/var/lib/printcam"
 MOTION_DIR="$DATA_DIR/motion"
 MOTION_STATE_FILE="$DATA_DIR/motion-enabled"
 CAMERA_DEVICE="${PRINTCAM_CAMERA_DEVICE:-}"
+CAMERA_NAME="${PRINTCAM_CAMERA_NAME:-}"
 PORT="${PRINTCAM_PORT:-8080}"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -32,44 +33,116 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "==> Installing OS packages"
 apt-get update
-apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils ffmpeg rsync network-manager openssh-server dconf-cli sudo
+apt-get install -y curl ca-certificates python3 python3-venv python3-pip v4l-utils ffmpeg pulseaudio-utils rsync network-manager openssh-server dconf-cli sudo
 
 echo "==> Selecting camera"
-if [[ -n "$CAMERA_DEVICE" ]]; then
+choose_even_video_path() {
+  local best_even=""
+  local best_even_num=999999
+  local best_any=""
+  local best_any_num=999999
+  local path number
+
+  for path in "$@"; do
+    if [[ "$path" =~ ^/dev/video([0-9]+)$ ]]; then
+      number="${BASH_REMATCH[1]}"
+      if (( number < best_any_num )); then
+        best_any_num="$number"
+        best_any="$path"
+      fi
+      if (( number % 2 == 0 && number < best_even_num )); then
+        best_even_num="$number"
+        best_even="$path"
+      fi
+    fi
+  done
+
+  if [[ -n "$best_even" ]]; then
+    printf '%s\n' "$best_even"
+  else
+    printf '%s\n' "$best_any"
+  fi
+}
+
+quote_env_value() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"\n' "$value"
+}
+
+if [[ -n "$CAMERA_NAME" && -n "$CAMERA_DEVICE" ]]; then
+  echo "Using camera from environment: $CAMERA_NAME ($CAMERA_DEVICE)"
+elif [[ -n "$CAMERA_DEVICE" ]]; then
   echo "Using camera from PRINTCAM_CAMERA_DEVICE: $CAMERA_DEVICE"
 else
-  CAMERA_DEVICES=()
-  CAMERA_DEVICE_SEEN=" "
-  while IFS= read -r line; do
-    device="${line#"${line%%[![:space:]]*}"}"
-    if [[ "$device" == /dev/video* && -e "$device" && "$CAMERA_DEVICE_SEEN" != *" $device "* ]]; then
-      CAMERA_DEVICES+=("$device")
-      CAMERA_DEVICE_SEEN+=" $device "
+  CAMERA_NAMES=()
+  CAMERA_PATHS=()
+  CURRENT_CAMERA_NAME=""
+  CURRENT_CAMERA_PATHS=()
+
+  flush_current_camera() {
+    if [[ -n "$CURRENT_CAMERA_NAME" && "${#CURRENT_CAMERA_PATHS[@]}" -gt 0 ]]; then
+      CAMERA_NAMES+=("$CURRENT_CAMERA_NAME")
+      CAMERA_PATHS+=("${CURRENT_CAMERA_PATHS[*]}")
+    fi
+  }
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    if [[ -z "$trimmed" ]]; then
+      flush_current_camera
+      CURRENT_CAMERA_NAME=""
+      CURRENT_CAMERA_PATHS=()
+    elif [[ "$line" != [[:space:]]* && "$trimmed" == *: ]]; then
+      flush_current_camera
+      CURRENT_CAMERA_NAME="${trimmed%:}"
+      CURRENT_CAMERA_PATHS=()
+    elif [[ "$trimmed" == /dev/video* && -e "$trimmed" ]]; then
+      CURRENT_CAMERA_PATHS+=("$trimmed")
     fi
   done < <(v4l2-ctl --list-devices 2>/dev/null || true)
+  flush_current_camera
 
-  if [[ "${#CAMERA_DEVICES[@]}" -eq 0 ]]; then
+  if [[ "${#CAMERA_NAMES[@]}" -eq 0 ]]; then
+    CAMERA_DEVICES=()
+    CAMERA_DEVICE_SEEN=" "
     while IFS= read -r device; do
       if [[ "$CAMERA_DEVICE_SEEN" != *" $device "* ]]; then
         CAMERA_DEVICES+=("$device")
         CAMERA_DEVICE_SEEN+=" $device "
       fi
     done < <(find /dev -maxdepth 1 -type c -name 'video*' 2>/dev/null | sort -V)
+    for device in "${CAMERA_DEVICES[@]}"; do
+      CAMERA_NAMES+=("$device")
+      CAMERA_PATHS+=("$device")
+    done
   fi
 
-  if [[ "${#CAMERA_DEVICES[@]}" -gt 0 ]]; then
+  if [[ "${#CAMERA_NAMES[@]}" -gt 0 ]]; then
     echo "Detected cameras:"
-    for index in "${!CAMERA_DEVICES[@]}"; do
-      printf '  %d) %s\n' "$((index + 1))" "${CAMERA_DEVICES[$index]}"
+    for index in "${!CAMERA_NAMES[@]}"; do
+      read -r -a paths <<< "${CAMERA_PATHS[$index]}"
+      selected_stream="$(choose_even_video_path "${paths[@]}")"
+      printf '  %d) %s\n' "$((index + 1))" "${CAMERA_NAMES[$index]}"
+      printf '      streams: %s\n' "${CAMERA_PATHS[$index]}"
+      printf '      selected stream: %s\n' "$selected_stream"
     done
 
     while [[ -z "$CAMERA_DEVICE" ]]; do
       read -r -p "Camera to use [1] or device path: " CAMERA_CHOICE
       CAMERA_CHOICE="${CAMERA_CHOICE:-1}"
-      if [[ "$CAMERA_CHOICE" =~ ^[0-9]+$ && "$CAMERA_CHOICE" -ge 1 && "$CAMERA_CHOICE" -le "${#CAMERA_DEVICES[@]}" ]]; then
-        CAMERA_DEVICE="${CAMERA_DEVICES[$((CAMERA_CHOICE - 1))]}"
+      if [[ "$CAMERA_CHOICE" =~ ^[0-9]+$ && "$CAMERA_CHOICE" -ge 1 && "$CAMERA_CHOICE" -le "${#CAMERA_NAMES[@]}" ]]; then
+        choice_index="$((CAMERA_CHOICE - 1))"
+        CAMERA_NAME="${CAMERA_NAMES[$choice_index]}"
+        read -r -a paths <<< "${CAMERA_PATHS[$choice_index]}"
+        CAMERA_DEVICE="$(choose_even_video_path "${paths[@]}")"
+        if [[ "$CAMERA_NAME" == /dev/video* ]]; then
+          CAMERA_NAME=""
+        fi
       elif [[ "$CAMERA_CHOICE" == /dev/video* ]]; then
         CAMERA_DEVICE="$CAMERA_CHOICE"
+        CAMERA_NAME=""
       else
         echo "Choose a number from the list, or enter a path like /dev/video2."
       fi
@@ -196,9 +269,10 @@ fi
 
 echo "==> Creating service user"
 if ! id -u "$APP_NAME" >/dev/null 2>&1; then
-  useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin --groups video "$APP_NAME"
+  useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin --groups video,audio "$APP_NAME"
 fi
 usermod -aG video "$APP_NAME" || true
+usermod -aG audio "$APP_NAME" || true
 mkdir -p "$MOTION_DIR"
 if [[ ! -f "$MOTION_STATE_FILE" ]]; then
   printf '1\n' > "$MOTION_STATE_FILE"
@@ -239,11 +313,14 @@ fi
 
 PASSWORD_HASH="$(PRINTCAM_PASSWORD_INPUT="$PRINTCAM_PASSWORD" "$APP_DIR/.venv/bin/python" -c 'import os; from werkzeug.security import generate_password_hash; print(generate_password_hash(os.environ["PRINTCAM_PASSWORD_INPUT"]))')"
 SECRET_KEY="$("$APP_DIR/.venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(48))')"
+CAMERA_NAME_ENV="$(quote_env_value "$CAMERA_NAME")"
+CAMERA_DEVICE_ENV="$(quote_env_value "$CAMERA_DEVICE")"
 
 cat > "$CONFIG_FILE" <<EOF_CONFIG
 PRINTCAM_HOST=0.0.0.0
 PRINTCAM_PORT=$PORT
-PRINTCAM_CAMERA_DEVICE=$CAMERA_DEVICE
+PRINTCAM_CAMERA_NAME=$CAMERA_NAME_ENV
+PRINTCAM_CAMERA_DEVICE=$CAMERA_DEVICE_ENV
 PRINTCAM_FRAME_WIDTH=1280
 PRINTCAM_FRAME_HEIGHT=720
 PRINTCAM_FRAME_FPS=15
@@ -257,6 +334,10 @@ PRINTCAM_MOTION_MAX_EVENTS=200
 PRINTCAM_MOTION_RECORDING_CODEC=MJPG
 PRINTCAM_FFMPEG_BIN=ffmpeg
 PRINTCAM_MOTION_OUTPUT_VIDEO_CODEC=libx264
+PRINTCAM_AUDIO_ENABLED=0
+PRINTCAM_AUDIO_SOURCE=
+PRINTCAM_AUDIO_RATE=44100
+PRINTCAM_AUDIO_CHANNELS=2
 PRINTCAM_SECRET_KEY=$SECRET_KEY
 PRINTCAM_PASSWORD_HASH=$PASSWORD_HASH
 EOF_CONFIG

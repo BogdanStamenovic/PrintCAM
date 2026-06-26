@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=printcam
 Group=video
+SupplementaryGroups=audio video
 WorkingDirectory=/opt/printcam
 EnvironmentFile=/etc/printcam/printcam.env
 ExecStart=/opt/printcam/scripts/run_server.sh

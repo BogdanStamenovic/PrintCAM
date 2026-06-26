@@ -14,7 +14,8 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 from werkzeug.security import check_password_hash
 
 
-CAMERA_DEVICE = os.environ.get("PRINTCAM_CAMERA_DEVICE", "/dev/video2")
+CAMERA_NAME = os.environ.get("PRINTCAM_CAMERA_NAME", "").strip()
+CAMERA_DEVICE_FALLBACK = os.environ.get("PRINTCAM_CAMERA_DEVICE", "/dev/video2")
 FRAME_WIDTH = int(os.environ.get("PRINTCAM_FRAME_WIDTH", "1280"))
 FRAME_HEIGHT = int(os.environ.get("PRINTCAM_FRAME_HEIGHT", "720"))
 FRAME_FPS = int(os.environ.get("PRINTCAM_FRAME_FPS", "15"))
@@ -30,6 +31,10 @@ MOTION_MAX_EVENTS = int(os.environ.get("PRINTCAM_MOTION_MAX_EVENTS", "200"))
 MOTION_RECORDING_CODEC = os.environ.get("PRINTCAM_MOTION_RECORDING_CODEC", "MJPG")
 MOTION_FFMPEG_BIN = os.environ.get("PRINTCAM_FFMPEG_BIN", "ffmpeg")
 MOTION_OUTPUT_VIDEO_CODEC = os.environ.get("PRINTCAM_MOTION_OUTPUT_VIDEO_CODEC", "libx264")
+AUDIO_ENABLED = os.environ.get("PRINTCAM_AUDIO_ENABLED", "0") == "1"
+AUDIO_SOURCE = os.environ.get("PRINTCAM_AUDIO_SOURCE", "").strip()
+AUDIO_RATE = int(os.environ.get("PRINTCAM_AUDIO_RATE", "44100"))
+AUDIO_CHANNELS = int(os.environ.get("PRINTCAM_AUDIO_CHANNELS", "2"))
 MOTION_TIMESTAMP_PATTERN = r"\d{8}-\d{6}-\d{3}"
 MOTION_FILENAME_RE = re.compile(
     rf"^motion-(?P<start>{MOTION_TIMESTAMP_PATTERN})(?:-to-(?P<end>{MOTION_TIMESTAMP_PATTERN}))?-score-(?P<score>[0-9.]+)\.mp4$"
@@ -50,9 +55,87 @@ net_sample = {
 }
 
 
+def parse_v4l2_devices(output):
+    devices = []
+    current_name = None
+    current_paths = []
+
+    def flush_current():
+        if current_name and current_paths:
+            devices.append({"name": current_name, "paths": list(current_paths)})
+
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            flush_current()
+            current_name = None
+            current_paths = []
+            continue
+
+        if not raw_line.startswith((" ", "\t")) and stripped.endswith(":"):
+            flush_current()
+            current_name = stripped[:-1].strip()
+            current_paths = []
+            continue
+
+        if stripped.startswith("/dev/video"):
+            current_paths.append(stripped)
+
+    flush_current()
+    return devices
+
+
+def even_video_path(paths):
+    numbered_paths = []
+    for path in paths:
+        match = re.fullmatch(r"/dev/video(\d+)", path)
+        if match:
+            numbered_paths.append((int(match.group(1)), path))
+
+    even_paths = [item for item in numbered_paths if item[0] % 2 == 0]
+    if even_paths:
+        return sorted(even_paths)[0][1]
+    if numbered_paths:
+        return sorted(numbered_paths)[0][1]
+    return paths[0] if paths else None
+
+
+def resolve_camera_device(camera_name, fallback_device):
+    if not camera_name:
+        return fallback_device, None
+
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "--list-devices"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return fallback_device, f"Could not list cameras with v4l2-ctl: {exc}. Falling back to {fallback_device}."
+
+    if result.returncode != 0:
+        error = result.stderr.strip() or "unknown error"
+        return fallback_device, f"v4l2-ctl --list-devices failed: {error}. Falling back to {fallback_device}."
+
+    for device in parse_v4l2_devices(result.stdout):
+        if device["name"] == camera_name:
+            resolved = even_video_path(device["paths"])
+            if resolved:
+                return resolved, None
+
+    return fallback_device, f"Camera named {camera_name!r} was not found. Falling back to {fallback_device}."
+
+
+CAMERA_DEVICE, CAMERA_RESOLVE_ERROR = resolve_camera_device(CAMERA_NAME, CAMERA_DEVICE_FALLBACK)
+
+
 class CameraStream:
-    def __init__(self, device):
+    def __init__(self, device, name=""):
         self.device = device
+        self.name = name
         self.lock = threading.Lock()
         self.capture = None
         self.last_frame = None
@@ -241,6 +324,9 @@ class CameraStream:
             opened = bool(self.capture and self.capture.isOpened())
             return {
                 "device": self.device,
+                "configured_name": self.name,
+                "fallback_device": CAMERA_DEVICE_FALLBACK,
+                "resolve_error": CAMERA_RESOLVE_ERROR,
                 "opened": opened,
                 "last_error": self.last_error,
                 "last_frame_at": self.last_frame_at,
@@ -251,13 +337,132 @@ class CameraStream:
                 "motion_recording_confirmed": self.motion_recording_confirmed,
             }
 
+    def switch_device(self, device, name=""):
+        with self.lock:
+            self.discard_motion_recording()
+            self._release_locked()
+            self.device = device
+            self.name = name
+            self.last_frame = None
+            self.last_frame_at = None
+            self.last_motion_at = None
+            self.last_motion_score = 0.0
+            self.previous_motion_frame = None
+            self.last_error = None
+        return self.open()
+
     def _release_locked(self):
         if self.capture:
             self.capture.release()
         self.capture = None
 
 
-camera = CameraStream(CAMERA_DEVICE)
+class AudioRelay:
+    def __init__(self, source=""):
+        self.source = source
+        self.lock = threading.Lock()
+        self.enabled = False
+        self.last_error = None
+        self.capture_process = None
+        self.playback_process = None
+
+    def start(self, source=None):
+        with self.lock:
+            if source is not None:
+                self.source = source
+            self._stop_locked()
+
+            if shutil.which("parec") is None or shutil.which("paplay") is None:
+                self.last_error = "parec/paplay are not installed"
+                self.enabled = False
+                return False
+
+            capture_args = [
+                "parec",
+                "--format=s16le",
+                f"--rate={AUDIO_RATE}",
+                f"--channels={AUDIO_CHANNELS}",
+            ]
+            if self.source:
+                capture_args.append(f"--device={self.source}")
+
+            playback_args = [
+                "paplay",
+                "--raw",
+                "--format=s16le",
+                f"--rate={AUDIO_RATE}",
+                f"--channels={AUDIO_CHANNELS}",
+            ]
+
+            try:
+                capture = subprocess.Popen(capture_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                playback = subprocess.Popen(playback_args, stdin=capture.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if capture.stdout:
+                    capture.stdout.close()
+            except OSError as exc:
+                self.last_error = f"Could not start audio relay: {exc}"
+                self.enabled = False
+                return False
+
+            time.sleep(0.1)
+            if capture.poll() is not None or playback.poll() is not None:
+                self._terminate_process(capture)
+                self._terminate_process(playback)
+                self.last_error = "audio relay exited immediately"
+                self.enabled = False
+                return False
+
+            self.capture_process = capture
+            self.playback_process = playback
+            self.enabled = True
+            self.last_error = None
+            return True
+
+    def stop(self):
+        with self.lock:
+            self._stop_locked()
+
+    def status(self):
+        with self.lock:
+            running = self._running_locked()
+            if self.enabled and not running:
+                self.enabled = False
+                self.last_error = self.last_error or "audio relay stopped"
+            return {
+                "enabled": self.enabled and running,
+                "source": self.source,
+                "last_error": self.last_error,
+                "available": shutil.which("parec") is not None and shutil.which("paplay") is not None,
+            }
+
+    def _running_locked(self):
+        return bool(
+            self.capture_process
+            and self.playback_process
+            and self.capture_process.poll() is None
+            and self.playback_process.poll() is None
+        )
+
+    def _stop_locked(self):
+        self.enabled = False
+        self._terminate_process(self.capture_process)
+        self._terminate_process(self.playback_process)
+        self.capture_process = None
+        self.playback_process = None
+
+    @staticmethod
+    def _terminate_process(process):
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+camera = CameraStream(CAMERA_DEVICE, CAMERA_NAME)
+audio = AudioRelay(AUDIO_SOURCE)
 
 
 def authenticated():
@@ -325,6 +530,56 @@ def api_status():
     return jsonify(build_status())
 
 
+@app.get("/api/cameras")
+def api_cameras():
+    return jsonify({"devices": list_camera_devices(), "active_device": camera.device})
+
+
+@app.patch("/api/camera/settings")
+@app.post("/api/camera/settings")
+def api_camera_settings():
+    payload = request.get_json(silent=True) or {}
+    device = str(payload.get("device", "")).strip()
+    if not valid_video_device_path(device):
+        return jsonify({"ok": False, "error": "device must be an existing /dev/video* path"}), 400
+
+    name = ""
+    for item in list_camera_devices():
+        if device in item["paths"]:
+            name = item["name"]
+            break
+
+    opened = camera.switch_device(device, name)
+    return jsonify({"ok": opened, "camera": camera.status()})
+
+
+@app.get("/api/audio")
+def api_audio():
+    return jsonify({"sources": list_audio_sources(), "default_source": default_audio_source(), "relay": audio.status()})
+
+
+@app.patch("/api/audio/settings")
+@app.post("/api/audio/settings")
+def api_audio_settings():
+    payload = request.get_json(silent=True) or {}
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        return jsonify({"ok": False, "error": "enabled must be true or false"}), 400
+
+    source = payload.get("source")
+    if source is not None:
+        source = str(source).strip()
+        source_names = {item["name"] for item in list_audio_sources()}
+        if source and source not in source_names:
+            return jsonify({"ok": False, "error": "unknown audio source"}), 400
+
+    ok = audio.start(source) if enabled else True
+    if not enabled:
+        audio.stop()
+    status = audio.status()
+    return jsonify({"ok": ok, "relay": status})
+
+
 @app.get("/api/motion")
 def api_motion_events():
     return jsonify({"events": list_motion_events(), "enabled": motion_enabled()})
@@ -376,8 +631,12 @@ def healthz():
         {
             "ok": bool(PASSWORD_HASH),
             "password_configured": bool(PASSWORD_HASH),
+            "camera_name": CAMERA_NAME,
             "camera_device": CAMERA_DEVICE,
+            "camera_device_fallback": CAMERA_DEVICE_FALLBACK,
+            "camera_resolve_error": CAMERA_RESOLVE_ERROR,
             "camera_opened": cam["opened"],
+            "audio_enabled": audio.status()["enabled"],
             "motion_enabled": motion_enabled(),
             "motion_events": len(list_motion_events()),
             "service_uptime_seconds": int(time.time() - SERVICE_STARTED_AT),
@@ -462,6 +721,7 @@ def build_status():
         "network": network_status(),
         "tailscale": tailscale_status(),
         "camera": camera.status(),
+        "audio": audio.status(),
         "motion": motion_status(),
         "now": iso_from_timestamp(time.time()),
     }
@@ -557,6 +817,89 @@ def active_wifi_ssid():
         if len(fields) == 2 and fields[0] == "yes":
             return fields[1] or None
     return None
+
+
+def list_camera_devices():
+    result = run_command(["v4l2-ctl", "--list-devices"], timeout=5)
+    devices = []
+    seen_paths = set()
+
+    if result["returncode"] == 0:
+        for item in parse_v4l2_devices(result["stdout"]):
+            paths = [path for path in item["paths"] if valid_video_device_path(path)]
+            if not paths:
+                continue
+            for path in paths:
+                seen_paths.add(path)
+            devices.append(
+                {
+                    "name": item["name"],
+                    "paths": paths,
+                    "selected_path": even_video_path(paths),
+                }
+            )
+
+    for path in sorted(Path("/dev").glob("video*"), key=lambda value: natural_video_sort_key(str(value))):
+        device = str(path)
+        if device in seen_paths or not valid_video_device_path(device):
+            continue
+        devices.append({"name": device, "paths": [device], "selected_path": device})
+
+    return devices
+
+
+def valid_video_device_path(device):
+    return bool(re.fullmatch(r"/dev/video\d+", device)) and Path(device).exists()
+
+
+def natural_video_sort_key(device):
+    match = re.search(r"(\d+)$", device)
+    return int(match.group(1)) if match else 999999
+
+
+def list_audio_sources():
+    result = run_command(["pactl", "list", "sources"], timeout=5)
+    if result["returncode"] != 0:
+        return []
+
+    sources = []
+    current = {}
+    for raw_line in result["stdout"].splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("Source #"):
+            if current:
+                append_audio_source(sources, current)
+            current = {"index": stripped.removeprefix("Source #")}
+        elif stripped.startswith("Name:"):
+            current["name"] = stripped.removeprefix("Name:").strip()
+        elif stripped.startswith("Description:"):
+            current["description"] = stripped.removeprefix("Description:").strip()
+        elif stripped.startswith("State:"):
+            current["state"] = stripped.removeprefix("State:").strip()
+    if current:
+        append_audio_source(sources, current)
+    return sources
+
+
+def append_audio_source(sources, source):
+    name = source.get("name", "")
+    if not name or name.endswith(".monitor"):
+        return
+    sources.append(
+        {
+            "index": source.get("index"),
+            "name": name,
+            "description": source.get("description") or name,
+            "state": source.get("state"),
+        }
+    )
+
+
+def default_audio_source():
+    result = run_command(["pactl", "get-default-source"], timeout=2)
+    if result["returncode"] != 0:
+        return None
+    return result["stdout"].strip() or None
 
 
 def ensure_motion_dir():
@@ -713,9 +1056,9 @@ def prune_motion_events():
             path.unlink(missing_ok=True)
 
 
-def run_command(args):
+def run_command(args, timeout=2):
     try:
-        completed = subprocess.run(args, capture_output=True, text=True, timeout=2, check=False)
+        completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
         return {
             "returncode": completed.returncode,
             "stdout": completed.stdout,
@@ -732,6 +1075,8 @@ def iso_from_timestamp(value):
 
 
 motion_enabled_state = load_motion_enabled()
+if AUDIO_ENABLED:
+    audio.start(AUDIO_SOURCE)
 
 if __name__ == "__main__":
     app.run(host=os.environ.get("PRINTCAM_HOST", "0.0.0.0"), port=int(os.environ.get("PRINTCAM_PORT", "8080")))

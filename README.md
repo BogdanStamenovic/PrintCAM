@@ -8,6 +8,8 @@ It is intended to be hosted on your Tailnet with Tailscale, then kept alive by `
 
 - Password login page
 - Live MJPEG camera stream from the selected camera device
+- Dashboard camera picker for switching the active `/dev/video*` stream without restarting the service
+- Optional audio relay from a connected input device to the machine's default speakers
 - Motion detection that saves confirmed movement videos
 - Motion event gallery with enable, disable, open, and delete controls
 - Health dashboard with uptime, load, CPU, memory, disk, temperature, network speed, boot time, hostname, service time, Tailscale status, and camera status
@@ -31,7 +33,7 @@ sudo scripts/install.sh
 The installer will:
 
 1. Install OS packages.
-2. Detect installed cameras and ask which camera to use.
+2. Detect installed cameras with `v4l2-ctl --list-devices` and ask which camera to use.
 3. Enable SSH.
 4. Set the laptop display to blank after 1 minute and disable system sleep.
 5. Ask for Wi-Fi name and password.
@@ -61,6 +63,7 @@ If Tailscale is not already logged in, the installer runs `tailscale up` and pri
 | Wi-Fi reconnect timer | `printcam-wifi-reconnect.timer` |
 | Display blanking | 1 minute |
 | System sleep | Disabled |
+| Audio relay | Off by default |
 
 Change these by editing `/etc/printcam/printcam.env`, then restart:
 
@@ -138,13 +141,15 @@ List video devices:
 v4l2-ctl --list-devices
 ```
 
-Check `/dev/video2` exists:
+During install, PrintCAM stores the selected camera name and a fallback stream path in:
 
 ```bash
-ls -l /dev/video2
+sudo nano /etc/printcam/printcam.env
 ```
 
-If the camera is at a different path, edit:
+On every service start, the app runs `v4l2-ctl --list-devices`, finds the configured `PRINTCAM_CAMERA_NAME`, and uses the first even-numbered stream for that camera, such as `/dev/video0` or `/dev/video2`. This keeps the selected physical camera working after restarts even if Linux changes the video device numbering.
+
+For a manual override, edit:
 
 ```bash
 sudo nano /etc/printcam/printcam.env
@@ -153,6 +158,7 @@ sudo nano /etc/printcam/printcam.env
 Set:
 
 ```text
+PRINTCAM_CAMERA_NAME=
 PRINTCAM_CAMERA_DEVICE=/dev/videoX
 ```
 
@@ -161,6 +167,30 @@ Then restart:
 ```bash
 sudo systemctl restart printcam
 ```
+
+The dashboard also has a camera stream picker. Pick a detected `/dev/video*` path and click `Use camera` to switch the live stream immediately. This runtime switch is not written back to `/etc/printcam/printcam.env`; edit the env file when you want the same camera to be the default after restart.
+
+## Audio Relay
+
+The dashboard can relay sound from a connected audio input to the machine's default speakers. Pick an input in `Audio input`, then click `Start audio`. Click it again to stop.
+
+Useful settings in `/etc/printcam/printcam.env`:
+
+```text
+PRINTCAM_AUDIO_ENABLED=0
+PRINTCAM_AUDIO_SOURCE=
+PRINTCAM_AUDIO_RATE=44100
+PRINTCAM_AUDIO_CHANNELS=2
+```
+
+PrintCAM uses `parec` and `paplay` from `pulseaudio-utils`, which also work on many PipeWire/PulseAudio Linux Mint setups. If the dashboard says no audio inputs are available, check the machine with:
+
+```bash
+pactl list sources short
+pactl get-default-source
+```
+
+Audio relay depends on the service being able to access the desktop audio server. On some desktop setups, starting audio may require the active user session to be logged in and audio devices to be visible to system services.
 
 ## Motion Detection
 
