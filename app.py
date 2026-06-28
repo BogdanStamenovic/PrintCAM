@@ -10,7 +10,7 @@ from pathlib import Path
 
 import cv2
 import psutil
-from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, session, stream_with_context, url_for
 from werkzeug.security import check_password_hash
 
 
@@ -31,7 +31,6 @@ MOTION_MAX_EVENTS = int(os.environ.get("PRINTCAM_MOTION_MAX_EVENTS", "200"))
 MOTION_RECORDING_CODEC = os.environ.get("PRINTCAM_MOTION_RECORDING_CODEC", "MJPG")
 MOTION_FFMPEG_BIN = os.environ.get("PRINTCAM_FFMPEG_BIN", "ffmpeg")
 MOTION_OUTPUT_VIDEO_CODEC = os.environ.get("PRINTCAM_MOTION_OUTPUT_VIDEO_CODEC", "libx264")
-AUDIO_ENABLED = os.environ.get("PRINTCAM_AUDIO_ENABLED", "0") == "1"
 AUDIO_SOURCE = os.environ.get("PRINTCAM_AUDIO_SOURCE", "").strip()
 AUDIO_RATE = int(os.environ.get("PRINTCAM_AUDIO_RATE", "44100"))
 AUDIO_CHANNELS = int(os.environ.get("PRINTCAM_AUDIO_CHANNELS", "2"))
@@ -357,35 +356,43 @@ class CameraStream:
         self.capture = None
 
 
-class AudioRelay:
-    def __init__(self, source=""):
-        self.source = source
+class SpeakerInput:
+    def __init__(self):
         self.lock = threading.Lock()
         self.enabled = False
         self.last_error = None
-        self.capture_process = None
+        self.decoder_process = None
         self.playback_process = None
 
-    def start(self, source=None):
+    def start(self):
         with self.lock:
-            if source is not None:
-                self.source = source
             self._stop_locked()
 
-            if shutil.which("parec") is None or shutil.which("paplay") is None:
-                self.last_error = "parec/paplay are not installed"
+            if shutil.which("ffmpeg") is None or shutil.which("paplay") is None:
+                self.last_error = "ffmpeg/paplay are not installed"
                 self.enabled = False
                 return False
 
-            capture_args = [
-                "parec",
-                "--format=s16le",
-                f"--rate={AUDIO_RATE}",
-                f"--channels={AUDIO_CHANNELS}",
+            set_default_volume_100()
+            decoder_args = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "webm",
+                "-i",
+                "pipe:0",
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                str(AUDIO_RATE),
+                "-ac",
+                str(AUDIO_CHANNELS),
+                "pipe:1",
             ]
-            if self.source:
-                capture_args.append(f"--device={self.source}")
-
             playback_args = [
                 "paplay",
                 "--raw",
@@ -395,27 +402,54 @@ class AudioRelay:
             ]
 
             try:
-                capture = subprocess.Popen(capture_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                playback = subprocess.Popen(playback_args, stdin=capture.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if capture.stdout:
-                    capture.stdout.close()
+                decoder = subprocess.Popen(
+                    decoder_args,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                playback = subprocess.Popen(
+                    playback_args,
+                    stdin=decoder.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if decoder.stdout:
+                    decoder.stdout.close()
             except OSError as exc:
-                self.last_error = f"Could not start audio relay: {exc}"
+                self.last_error = f"Could not start speaker input: {exc}"
                 self.enabled = False
                 return False
 
             time.sleep(0.1)
-            if capture.poll() is not None or playback.poll() is not None:
-                self._terminate_process(capture)
+            if decoder.poll() is not None or playback.poll() is not None:
+                self._terminate_process(decoder)
                 self._terminate_process(playback)
-                self.last_error = "audio relay exited immediately"
+                self.last_error = "speaker input exited immediately"
                 self.enabled = False
                 return False
 
-            self.capture_process = capture
+            self.decoder_process = decoder
             self.playback_process = playback
             self.enabled = True
             self.last_error = None
+            return True
+
+    def write(self, chunk):
+        if not chunk:
+            return True
+        with self.lock:
+            if not self._running_locked() or not self.decoder_process.stdin:
+                self.enabled = False
+                self.last_error = self.last_error or "speaker input is not running"
+                return False
+            try:
+                self.decoder_process.stdin.write(chunk)
+                self.decoder_process.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                self.enabled = False
+                self.last_error = f"speaker input stopped: {exc}"
+                return False
             return True
 
     def stop(self):
@@ -427,27 +461,31 @@ class AudioRelay:
             running = self._running_locked()
             if self.enabled and not running:
                 self.enabled = False
-                self.last_error = self.last_error or "audio relay stopped"
+                self.last_error = self.last_error or "speaker input stopped"
             return {
                 "enabled": self.enabled and running,
-                "source": self.source,
                 "last_error": self.last_error,
-                "available": shutil.which("parec") is not None and shutil.which("paplay") is not None,
+                "available": shutil.which("ffmpeg") is not None and shutil.which("paplay") is not None,
             }
 
     def _running_locked(self):
         return bool(
-            self.capture_process
+            self.decoder_process
             and self.playback_process
-            and self.capture_process.poll() is None
+            and self.decoder_process.poll() is None
             and self.playback_process.poll() is None
         )
 
     def _stop_locked(self):
         self.enabled = False
-        self._terminate_process(self.capture_process)
+        if self.decoder_process and self.decoder_process.stdin:
+            try:
+                self.decoder_process.stdin.close()
+            except OSError:
+                pass
+        self._terminate_process(self.decoder_process)
         self._terminate_process(self.playback_process)
-        self.capture_process = None
+        self.decoder_process = None
         self.playback_process = None
 
     @staticmethod
@@ -462,7 +500,7 @@ class AudioRelay:
 
 
 camera = CameraStream(CAMERA_DEVICE, CAMERA_NAME)
-audio = AudioRelay(AUDIO_SOURCE)
+speaker_input = SpeakerInput()
 
 
 def authenticated():
@@ -517,6 +555,22 @@ def video():
     return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+@app.get("/audio/device.wav")
+def device_audio_stream():
+    source = request.args.get("source", "").strip() or AUDIO_SOURCE
+    if source:
+        source_names = {item["name"] for item in list_audio_sources()}
+        if source not in source_names:
+            return Response("unknown audio source\n", status=400, mimetype="text/plain")
+    if shutil.which("parec") is None:
+        return Response("parec is not installed\n", status=503, mimetype="text/plain")
+    return Response(
+        stream_with_context(generate_audio_wav(source)),
+        mimetype="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/snapshot.jpg")
 def snapshot():
     frame = camera.read_jpeg()
@@ -555,29 +609,34 @@ def api_camera_settings():
 
 @app.get("/api/audio")
 def api_audio():
-    return jsonify({"sources": list_audio_sources(), "default_source": default_audio_source(), "relay": audio.status()})
+    return jsonify(
+        {
+            "sources": list_audio_sources(),
+            "default_source": default_audio_source(),
+            "listen": {"available": shutil.which("parec") is not None, "source": AUDIO_SOURCE},
+            "speaker_input": speaker_input.status(),
+        }
+    )
 
 
-@app.patch("/api/audio/settings")
-@app.post("/api/audio/settings")
-def api_audio_settings():
-    payload = request.get_json(silent=True) or {}
-    enabled = payload.get("enabled")
-    if not isinstance(enabled, bool):
-        return jsonify({"ok": False, "error": "enabled must be true or false"}), 400
+@app.post("/api/audio/speaker/start")
+def api_audio_speaker_start():
+    ok = speaker_input.start()
+    status = speaker_input.status()
+    return jsonify({"ok": ok, "speaker_input": status}), (200 if ok else 503)
 
-    source = payload.get("source")
-    if source is not None:
-        source = str(source).strip()
-        source_names = {item["name"] for item in list_audio_sources()}
-        if source and source not in source_names:
-            return jsonify({"ok": False, "error": "unknown audio source"}), 400
 
-    ok = audio.start(source) if enabled else True
-    if not enabled:
-        audio.stop()
-    status = audio.status()
-    return jsonify({"ok": ok, "relay": status})
+@app.post("/api/audio/speaker/chunk")
+def api_audio_speaker_chunk():
+    ok = speaker_input.write(request.get_data(cache=False))
+    status = speaker_input.status()
+    return jsonify({"ok": ok, "speaker_input": status}), (200 if ok else 409)
+
+
+@app.post("/api/audio/speaker/stop")
+def api_audio_speaker_stop():
+    speaker_input.stop()
+    return jsonify({"ok": True, "speaker_input": speaker_input.status()})
 
 
 @app.get("/api/motion")
@@ -636,7 +695,7 @@ def healthz():
             "camera_device_fallback": CAMERA_DEVICE_FALLBACK,
             "camera_resolve_error": CAMERA_RESOLVE_ERROR,
             "camera_opened": cam["opened"],
-            "audio_enabled": audio.status()["enabled"],
+            "speaker_input_enabled": speaker_input.status()["enabled"],
             "motion_enabled": motion_enabled(),
             "motion_events": len(list_motion_events()),
             "service_uptime_seconds": int(time.time() - SERVICE_STARTED_AT),
@@ -703,6 +762,49 @@ def generate_frames():
         time.sleep(delay)
 
 
+def generate_audio_wav(source=""):
+    args = [
+        "parec",
+        "--format=s16le",
+        f"--rate={AUDIO_RATE}",
+        f"--channels={AUDIO_CHANNELS}",
+    ]
+    if source:
+        args.append(f"--device={source}")
+
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    yield wav_stream_header(AUDIO_RATE, AUDIO_CHANNELS, 16)
+    try:
+        while process.poll() is None:
+            chunk = process.stdout.read(4096) if process.stdout else b""
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        SpeakerInput._terminate_process(process)
+
+
+def wav_stream_header(rate, channels, bits_per_sample):
+    byte_rate = rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    data_size = 0xFFFFFFFF
+    riff_size = 0xFFFFFFFF
+    return (
+        b"RIFF"
+        + riff_size.to_bytes(4, "little", signed=False)
+        + b"WAVEfmt "
+        + (16).to_bytes(4, "little", signed=False)
+        + (1).to_bytes(2, "little", signed=False)
+        + channels.to_bytes(2, "little", signed=False)
+        + rate.to_bytes(4, "little", signed=False)
+        + byte_rate.to_bytes(4, "little", signed=False)
+        + block_align.to_bytes(2, "little", signed=False)
+        + bits_per_sample.to_bytes(2, "little", signed=False)
+        + b"data"
+        + data_size.to_bytes(4, "little", signed=False)
+    )
+
+
 def build_status():
     return {
         "host": {
@@ -721,7 +823,10 @@ def build_status():
         "network": network_status(),
         "tailscale": tailscale_status(),
         "camera": camera.status(),
-        "audio": audio.status(),
+        "audio": {
+            "listen_available": shutil.which("parec") is not None,
+            "speaker_input": speaker_input.status(),
+        },
         "motion": motion_status(),
         "now": iso_from_timestamp(time.time()),
     }
@@ -902,6 +1007,14 @@ def default_audio_source():
     return result["stdout"].strip() or None
 
 
+def set_default_volume_100():
+    if shutil.which("pactl") is None:
+        return False
+    unmute = run_command(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"], timeout=2)
+    volume = run_command(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "100%"], timeout=2)
+    return unmute["returncode"] == 0 and volume["returncode"] == 0
+
+
 def ensure_motion_dir():
     MOTION_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1075,8 +1188,6 @@ def iso_from_timestamp(value):
 
 
 motion_enabled_state = load_motion_enabled()
-if AUDIO_ENABLED:
-    audio.start(AUDIO_SOURCE)
 
 if __name__ == "__main__":
     app.run(host=os.environ.get("PRINTCAM_HOST", "0.0.0.0"), port=int(os.environ.get("PRINTCAM_PORT", "8080")))

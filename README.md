@@ -9,7 +9,7 @@ It is intended to be hosted on your Tailnet with Tailscale, then kept alive by `
 - Password login page
 - Live MJPEG camera stream from the selected camera device
 - Dashboard camera picker for switching the active `/dev/video*` stream without restarting the service
-- Optional audio relay from a connected input device to the machine's default speakers
+- Optional two-way audio: listen to the device input from the browser, and send browser microphone audio to the device speakers
 - Motion detection that saves confirmed movement videos
 - Motion event gallery with enable, disable, open, and delete controls
 - Health dashboard with uptime, load, CPU, memory, disk, temperature, network speed, boot time, hostname, service time, Tailscale status, and camera status
@@ -63,7 +63,7 @@ If Tailscale is not already logged in, the installer runs `tailscale up` and pri
 | Wi-Fi reconnect timer | `printcam-wifi-reconnect.timer` |
 | Display blanking | 1 minute |
 | System sleep | Disabled |
-| Audio relay | Off by default |
+| Audio | Manual browser controls |
 
 Change these by editing `/etc/printcam/printcam.env`, then restart:
 
@@ -170,27 +170,28 @@ sudo systemctl restart printcam
 
 The dashboard also has a camera stream picker. Pick a detected `/dev/video*` path and click `Use camera` to switch the live stream immediately. This runtime switch is not written back to `/etc/printcam/printcam.env`; edit the env file when you want the same camera to be the default after restart.
 
-## Audio Relay
+## Audio
 
-The dashboard can relay sound from a connected audio input to the machine's default speakers. Pick an input in `Audio input`, then click `Start audio`. Click it again to stop.
+The dashboard has two separate audio controls. Pick a device input in `Audio input`, then click `Audio` to listen to that device input in the browser. Click `Send audio` to stream your browser microphone to the device speakers. The two buttons are independent, so you can listen and send at the same time.
+
+When `Send audio` starts, PrintCAM unmutes the device's default audio sink and sets it to 100% volume before playing the incoming microphone stream.
 
 Useful settings in `/etc/printcam/printcam.env`:
 
 ```text
-PRINTCAM_AUDIO_ENABLED=0
 PRINTCAM_AUDIO_SOURCE=
 PRINTCAM_AUDIO_RATE=44100
 PRINTCAM_AUDIO_CHANNELS=2
 ```
 
-PrintCAM uses `parec` and `paplay` from `pulseaudio-utils`, which also work on many PipeWire/PulseAudio Linux Mint setups. If the dashboard says no audio inputs are available, check the machine with:
+PrintCAM uses `parec`, `paplay`, and `pactl` from `pulseaudio-utils`, plus `ffmpeg` for browser microphone decoding. These also work on many PipeWire/PulseAudio Linux Mint setups. If the dashboard says no audio inputs are available, check the machine with:
 
 ```bash
 pactl list sources short
 pactl get-default-source
 ```
 
-Audio relay depends on the service being able to access the desktop audio server. On some desktop setups, starting audio may require the active user session to be logged in and audio devices to be visible to system services.
+Audio depends on the service being able to access the desktop audio server. On some desktop setups, starting audio may require the active user session to be logged in and audio devices to be visible to system services. Browser microphone capture also requires a secure context, such as HTTPS or a localhost page.
 
 ## Motion Detection
 

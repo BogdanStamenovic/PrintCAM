@@ -127,6 +127,13 @@ h2 {
   gap: 10px;
 }
 
+.button-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .control-row select {
   min-width: 0;
   min-height: 42px;
@@ -380,6 +387,14 @@ h2 {
 
   .control-row {
     grid-template-columns: 1fr;
+  }
+
+  .button-pair {
+    justify-content: stretch;
+  }
+
+  .button-pair button {
+    flex: 1 1 140px;
   }
 
   .topbar form {

@@ -25,11 +25,17 @@ const ids = {
   cameraDevice: document.querySelector("#camera-device"),
   applyCamera: document.querySelector("#apply-camera"),
   audioSource: document.querySelector("#audio-source"),
-  toggleAudio: document.querySelector("#toggle-audio"),
+  listenAudio: document.querySelector("#listen-audio"),
+  sendAudio: document.querySelector("#send-audio"),
 };
 
 let motionEnabled = false;
-let audioEnabled = false;
+let listeningToDevice = false;
+let sendingAudio = false;
+let deviceAudio = null;
+let micStream = null;
+let mediaRecorder = null;
+let audioChunkQueue = Promise.resolve();
 
 function formatDuration(seconds) {
   const value = Math.max(Number(seconds) || 0, 0);
@@ -111,7 +117,7 @@ async function refreshStatus() {
     setText(ids.wifi, status.network.wifi_ssid || "offline");
     setText(ids.tailscale, status.tailscale.ip4 || (status.tailscale.ok ? "online" : "offline"));
     setText(ids.camera, status.camera.opened ? "streaming" : status.camera.last_error || "offline");
-    setAudioToggle(Boolean(status.audio.enabled), status.audio.last_error);
+    setSendAudioToggle(Boolean(status.audio.speaker_input?.enabled), status.audio.speaker_input?.last_error);
     setText(ids.load, status.host.load_average ? status.host.load_average.map((v) => v.toFixed(2)).join(" ") : "n/a");
     setText(ids.motionCount, status.motion.event_count);
     setMotionToggle(status.motion.enabled);
@@ -143,11 +149,30 @@ function setMotionToggle(enabled) {
   ids.toggleMotion.classList.toggle("is-on", motionEnabled);
 }
 
-function setAudioToggle(enabled, error) {
-  audioEnabled = Boolean(enabled);
-  setText(ids.audio, audioEnabled ? "playing" : error || "off");
-  ids.toggleAudio.textContent = audioEnabled ? "Stop audio" : "Start audio";
-  ids.toggleAudio.classList.toggle("is-on", audioEnabled);
+function updateAudioSummary(error) {
+  if (listeningToDevice && sendingAudio) {
+    setText(ids.audio, "listening + sending");
+  } else if (listeningToDevice) {
+    setText(ids.audio, "listening");
+  } else if (sendingAudio) {
+    setText(ids.audio, "sending");
+  } else {
+    setText(ids.audio, error || "off");
+  }
+}
+
+function setListenAudioToggle(enabled, error) {
+  listeningToDevice = Boolean(enabled);
+  ids.listenAudio.textContent = listeningToDevice ? "Stop audio" : "Audio";
+  ids.listenAudio.classList.toggle("is-on", listeningToDevice);
+  updateAudioSummary(error);
+}
+
+function setSendAudioToggle(enabled, error) {
+  sendingAudio = Boolean(enabled);
+  ids.sendAudio.textContent = sendingAudio ? "Stop sending" : "Send audio";
+  ids.sendAudio.classList.toggle("is-on", sendingAudio);
+  updateAudioSummary(error);
 }
 
 function optionLabelForCamera(device, path) {
@@ -181,8 +206,8 @@ async function refreshAudioSources() {
     ids.audioSource.innerHTML = (payload.sources || [])
       .map((source) => `<option value="${escapeHtml(source.name)}">${escapeHtml(source.description || source.name)}</option>`)
       .join("") || `<option value="">No audio inputs found</option>`;
-    ids.audioSource.value = payload.relay.source || payload.default_source || "";
-    setAudioToggle(Boolean(payload.relay.enabled), payload.relay.last_error);
+    ids.audioSource.value = payload.listen?.source || payload.default_source || "";
+    setSendAudioToggle(Boolean(payload.speaker_input?.enabled), payload.speaker_input?.last_error);
   } catch (error) {
     ids.audioSource.innerHTML = `<option value="">Could not load audio</option>`;
   }
@@ -246,15 +271,72 @@ async function setCameraDevice(device) {
   await refreshCameraDevices();
 }
 
-async function setAudioEnabled(enabled) {
-  const response = await fetch("/api/audio/settings", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled, source: ids.audioSource.value }),
+async function startDeviceAudio() {
+  stopDeviceAudio();
+  const source = encodeURIComponent(ids.audioSource.value || "");
+  deviceAudio = new Audio(`/audio/device.wav?source=${source}&ts=${Date.now()}`);
+  deviceAudio.preload = "none";
+  deviceAudio.addEventListener("error", () => setListenAudioToggle(false, "listen failed"), { once: true });
+  await deviceAudio.play();
+  setListenAudioToggle(true);
+}
+
+function stopDeviceAudio() {
+  if (!deviceAudio) return;
+  deviceAudio.pause();
+  deviceAudio.removeAttribute("src");
+  deviceAudio.load();
+  deviceAudio = null;
+  setListenAudioToggle(false);
+}
+
+async function startSendingAudio() {
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    throw new Error("microphone capture is not available in this browser");
+  }
+
+  const startResponse = await fetch("/api/audio/speaker/start", { method: "POST" });
+  if (!startResponse.ok) throw new Error(`HTTP ${startResponse.status}`);
+
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const options = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? { mimeType: "audio/webm;codecs=opus" }
+    : {};
+  mediaRecorder = new MediaRecorder(micStream, options);
+  audioChunkQueue = Promise.resolve();
+
+  mediaRecorder.addEventListener("dataavailable", (event) => {
+    if (!event.data || event.data.size === 0) return;
+    audioChunkQueue = audioChunkQueue.then(async () => {
+      const response = await fetch("/api/audio/speaker/chunk", {
+        method: "POST",
+        headers: { "Content-Type": event.data.type || "application/octet-stream" },
+        body: event.data,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    });
+    audioChunkQueue.catch((error) => {
+      console.error(error);
+      stopSendingAudio();
+    });
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const payload = await response.json();
-  setAudioToggle(Boolean(payload.relay.enabled), payload.relay.last_error);
+
+  mediaRecorder.start(250);
+  setSendAudioToggle(true);
+}
+
+async function stopSendingAudio() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
+  mediaRecorder = null;
+  if (micStream) {
+    micStream.getTracks().forEach((track) => track.stop());
+  }
+  micStream = null;
+  await audioChunkQueue.catch(() => {});
+  await fetch("/api/audio/speaker/stop", { method: "POST" }).catch(() => {});
+  setSendAudioToggle(false);
 }
 
 ids.motionEvents.addEventListener("click", async (event) => {
@@ -297,13 +379,38 @@ ids.applyCamera.addEventListener("click", async () => {
   }
 });
 
-ids.toggleAudio.addEventListener("click", async () => {
-  ids.toggleAudio.disabled = true;
+ids.listenAudio.addEventListener("click", async () => {
+  ids.listenAudio.disabled = true;
   try {
-    await setAudioEnabled(!audioEnabled);
+    if (listeningToDevice) {
+      stopDeviceAudio();
+    } else {
+      await startDeviceAudio();
+    }
     await refreshStatus();
+  } catch (error) {
+    console.error(error);
+    setListenAudioToggle(false, "listen failed");
   } finally {
-    ids.toggleAudio.disabled = false;
+    ids.listenAudio.disabled = false;
+  }
+});
+
+ids.sendAudio.addEventListener("click", async () => {
+  ids.sendAudio.disabled = true;
+  try {
+    if (sendingAudio) {
+      await stopSendingAudio();
+    } else {
+      await startSendingAudio();
+    }
+    await refreshStatus();
+  } catch (error) {
+    console.error(error);
+    await stopSendingAudio();
+    setSendAudioToggle(false, "send failed");
+  } finally {
+    ids.sendAudio.disabled = false;
   }
 });
 
